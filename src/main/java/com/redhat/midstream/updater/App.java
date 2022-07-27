@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.io.FileUtils;
@@ -16,6 +17,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.nio.charset.Charset;
+import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -42,10 +44,12 @@ public class App {
    private static final String UPSTREAM_ISSUES_AUTH_STRING_OPTION = "upstream-issues-auth-string";
    private static final String MIDSTREAM_BRANCH_OPTION = "midstream-branch";
    private static final String DOWNSTREAM_ISSUES_AUTH_STRING_OPTION = "downstream-issues-auth-string";
+   private static final String DOWNSTREAM_ISSUES_CUSTOMER_PRIORITY = "downstream-issues-customer-priority";
+   private static final String DOWNSTREAM_ISSUES_SECURITY_IMPACT = "downstream-issues-security-impact";
    private static final String RELEASE_OPTION = "release";
    private static final String QUALIFIER_OPTION = "qualifier";
    private static final String ASSIGNEE_OPTION = "assignee";
-   private static final String STRICT_OPTION = "strict";
+   private static final String CHECK_INCOMPLETE_COMMITS_OPTION = "check-incomplete-commits";
 
    public static void main(String[] args) throws Exception {
       // Parse arguments
@@ -54,14 +58,26 @@ public class App {
       options.addRequiredOption("a", ASSIGNEE_OPTION, true, "the default assignee, i.e. dbruscin");
       options.addRequiredOption("r", RELEASE_OPTION, true, "the release, i.e. AMQ 7.10.0.GA");
       options.addRequiredOption("q", QUALIFIER_OPTION, true, "the qualifier, i.e. CR1");
-      options.addRequiredOption("u", UPSTREAM_BRANCH_OPTION, true, "the upstream branch to cherry-pick from");
-      options.addRequiredOption("m", MIDSTREAM_BRANCH_OPTION, true, "the midstream branch to cherry-pick to");
-      options.addOption(null, STRICT_OPTION, false, "strict");
+      options.addRequiredOption("u", UPSTREAM_BRANCH_OPTION, true, "the upstream branch to cherry-pick from, i.e. main");
+      options.addRequiredOption("m", MIDSTREAM_BRANCH_OPTION, true, "the midstream branch to cherry-pick to, i.e. 2.16.0.jbossorg-x");
       options.addOption(null, CONFIRMED_COMMITS_OPTION, true, "the confirmed commits");
-      options.addOption(null, CONFIRMED_UPSTREAM_ISSUES_OPTION, true, "the confirmed upstream issues");
-      options.addOption(null, CONFIRMED_DOWNSTREAM_ISSUES_OPTION, true, "the confirmed downstream issues");
-      options.addOption(null, UPSTREAM_ISSUES_AUTH_STRING_OPTION, true, "the auth string to access upstream issues");
-      options.addOption(null, DOWNSTREAM_ISSUES_AUTH_STRING_OPTION, true, "the auth string to access downstream issues");
+
+      Option confirmedDownstreamIssuesOption = new Option(null, CONFIRMED_DOWNSTREAM_ISSUES_OPTION, true, "the confirmed downstream issues, commits related to other downstream issues with a different target release will be skipped");
+      confirmedDownstreamIssuesOption.setOptionalArg(true);
+      options.addOption(confirmedDownstreamIssuesOption);
+
+      Option confirmedUpstreamIssuesOption = new Option(null, CONFIRMED_UPSTREAM_ISSUES_OPTION, true, "the confirmed upstream issues, commits related to other upstream issues without a downstream issue will be skipped");
+      confirmedUpstreamIssuesOption.setOptionalArg(true);
+      options.addOption(confirmedUpstreamIssuesOption);
+
+      options.addOption(null, UPSTREAM_ISSUES_AUTH_STRING_OPTION, true, "the auth string to access upstream issues, i.e. \"Bearer ...\"");
+      options.addOption(null, DOWNSTREAM_ISSUES_AUTH_STRING_OPTION, true, "the auth string to access downstream issues, i.e. \"Bearer ...\"");
+      options.addOption(null, DOWNSTREAM_ISSUES_CUSTOMER_PRIORITY, true, "the customer priority to filter downstream issues, i.e. HIGH");
+      options.addOption(null, DOWNSTREAM_ISSUES_SECURITY_IMPACT, true, "the security impact to filter downstream issues, i.e. IMPORTANT");
+
+      Option checkIncompleteCommitsOption = new Option(null, CHECK_INCOMPLETE_COMMITS_OPTION, true, "check tasks of cherry-picked commits");
+      checkIncompleteCommitsOption.setOptionalArg(true);
+      options.addOption(checkIncompleteCommitsOption);
       CommandLineParser parser = new DefaultParser();
 
       try {
@@ -83,9 +99,19 @@ public class App {
 
       String downstreamIssuesAuthString = line.getOptionValue(DOWNSTREAM_ISSUES_AUTH_STRING_OPTION);
 
-      String upstreamIssuesAuthString = line.getOptionValue(UPSTREAM_ISSUES_AUTH_STRING_OPTION);
+      CustomerPriority downstreamIssuesCustomerPriority = CustomerPriority.LOW;
+      if (line.hasOption(DOWNSTREAM_ISSUES_CUSTOMER_PRIORITY)) {
+         downstreamIssuesCustomerPriority = CustomerPriority.fromName(
+            line.getOptionValue(DOWNSTREAM_ISSUES_CUSTOMER_PRIORITY));
+      }
 
-      Boolean strict = line.hasOption(STRICT_OPTION);
+      SecurityImpact downstreamIssuesSecurityImpact = SecurityImpact.LOW;
+      if (line.hasOption(DOWNSTREAM_ISSUES_SECURITY_IMPACT)) {
+         downstreamIssuesSecurityImpact = SecurityImpact.fromName(
+            line.getOptionValue(DOWNSTREAM_ISSUES_SECURITY_IMPACT));
+      }
+
+      String upstreamIssuesAuthString = line.getOptionValue(UPSTREAM_ISSUES_AUTH_STRING_OPTION);
 
       String confirmedCommitsFilename = null;
       if (line.hasOption(CONFIRMED_COMMITS_OPTION)) {
@@ -94,14 +120,18 @@ public class App {
 
       String confirmedUpstreamIssueKeys = null;
       if (line.hasOption(CONFIRMED_UPSTREAM_ISSUES_OPTION)) {
-         confirmedUpstreamIssueKeys = line.getOptionValue(CONFIRMED_UPSTREAM_ISSUES_OPTION);
+         confirmedUpstreamIssueKeys = line.getOptionValue(CONFIRMED_UPSTREAM_ISSUES_OPTION, "");
       }
 
       String confirmedDownstreamIssueKeys = null;
       if (line.hasOption(CONFIRMED_DOWNSTREAM_ISSUES_OPTION)) {
-         confirmedDownstreamIssueKeys = line.getOptionValue(CONFIRMED_DOWNSTREAM_ISSUES_OPTION);
+         confirmedDownstreamIssueKeys = line.getOptionValue(CONFIRMED_DOWNSTREAM_ISSUES_OPTION, "");
       }
 
+      boolean checkIncompleteCommits = true;
+      if (line.hasOption(CHECK_INCOMPLETE_COMMITS_OPTION)) {
+         checkIncompleteCommits = Boolean.parseBoolean(line.getOptionValue(CHECK_INCOMPLETE_COMMITS_OPTION, "true"));
+      }
 
       // Initialize target directory
       File targetDir = new File("target");
@@ -187,7 +217,9 @@ public class App {
 
                if (upstreamIssue != null) {
                   logger.debug("upstream issue " + upstreamIssueKey + " linked to downstream issue " + issue.getKey());
-                  upstreamIssue.getIssues().add(issue.getKey());
+                  if (!upstreamIssue.getIssues().contains(issue.getKey())) {
+                     upstreamIssue.getIssues().add(issue.getKey());
+                  }
                } else {
                   logger.warn("upstream issue " + upstreamIssueKey + " not found for downstream issue " + issue.getKey());
                }
@@ -219,12 +251,14 @@ public class App {
          .not(git.getRepository().resolve("origin/" + midstreamBranch))
          .add(git.getRepository().resolve("upstream/" + upstreamBranch))
          .call()) {
-         upstreamCommits.push(commit);
+         if (!commit.getShortMessage().startsWith("Merge pull request")) {
+            upstreamCommits.push(commit);
+         }
       }
 
 
       // Load cherry-picked commits
-      HashMap<String, ReleaseVersion> cherryPickedCommits = new HashMap<>();
+      HashMap<String, Map.Entry<ReleaseVersion, RevCommit>> cherryPickedCommits = new HashMap<>();
       ReleaseVersion cherryPickedReleaseVersion = candidateReleaseVersion;
       for (RevCommit commit : git.log()
          .not(git.getRepository().resolve("upstream/" + upstreamBranch))
@@ -233,6 +267,7 @@ public class App {
 
          Matcher prepareReleaseCommitMatcher = prepareReleaseCommitPattern.matcher(commit.getShortMessage());
          if (prepareReleaseCommitMatcher.find()) {
+            logger.info("prepare release commit found: " + commit.getName() + " - " + commit.getShortMessage());
             cherryPickedReleaseVersion = new ReleaseVersion(prepareReleaseCommitMatcher.group(1));
          }
 
@@ -254,7 +289,7 @@ public class App {
             }
             
             if (cherryPickedCommit != null) {
-               cherryPickedCommits.put(cherryPickedCommit.getName(), cherryPickedReleaseVersion);
+               cherryPickedCommits.put(cherryPickedCommit.getName(), new AbstractMap.SimpleEntry<>(cherryPickedReleaseVersion, commit));
             }
          }
       }
@@ -273,8 +308,9 @@ public class App {
 
 
       // Load confirmed upstream issues
-      Map<String, Issue> confirmedUpstreamIssues = new HashMap<>();
+      Map<String, Issue> confirmedUpstreamIssues = null;
       if (confirmedUpstreamIssueKeys != null) {
+         confirmedUpstreamIssues = new HashMap<>();
          for (String confirmedUpstreamIssueKey : confirmedUpstreamIssueKeys.split(",")) {
             Issue confirmedUpstreamIssue = upstreamIssues.get(confirmedUpstreamIssueKey);
             if (confirmedUpstreamIssue == null) {
@@ -286,8 +322,9 @@ public class App {
 
 
       // Load confirmed downstream issues
-      Map<String, Issue> confirmedDownstreamIssues = new HashMap<>();
+      Map<String, Issue> confirmedDownstreamIssues = null;
       if (confirmedDownstreamIssueKeys != null) {
+         confirmedDownstreamIssues = new HashMap<>();
          for (String confirmedDownstreamIssueKey : confirmedDownstreamIssueKeys.split(",")) {
             Issue confirmedDownstreamIssue = upstreamIssues.get(confirmedDownstreamIssueKey);
             if (confirmedDownstreamIssue == null) {
@@ -301,7 +338,8 @@ public class App {
       // Init commit parser
       CommitProcessor commitProcessor = new CommitProcessor(git, candidateReleaseVersion, requireReleaseIssues,
          upstreamIssueClient, downstreamIssueClient, assigneeResolver, upstreamIssues, downstreamIssues,
-         cherryPickedCommits, confirmedCommits, confirmedUpstreamIssues, confirmedDownstreamIssues, strict);
+         cherryPickedCommits, confirmedCommits, confirmedUpstreamIssues, confirmedDownstreamIssues,
+         downstreamIssuesCustomerPriority, downstreamIssuesSecurityImpact, checkIncompleteCommits);
 
 
       // Process upstream commits

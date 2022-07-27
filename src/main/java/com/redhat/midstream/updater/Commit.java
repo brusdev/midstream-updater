@@ -26,8 +26,10 @@ public class Commit {
    private List<String> downstreamIssues;
    private String upstreamCommit;
    private String downstreamCommit;
+   private String author;
    private String summary;
    private String reason;
+   private ReleaseVersion releaseVersion;
    private boolean upstreamTestCoverage;
    private List<CommitTask> tasks;
 
@@ -60,6 +62,15 @@ public class Commit {
 
    public Commit setReason(String reason) {
       this.reason = reason;
+      return this;
+   }
+
+   public String getAuthor() {
+      return author;
+   }
+
+   public Commit setAuthor(String author) {
+      this.author = author;
       return this;
    }
 
@@ -109,6 +120,15 @@ public class Commit {
 
    public Commit setDownstreamCommit(String downstreamCommit) {
       this.downstreamCommit = downstreamCommit;
+      return this;
+   }
+
+   public ReleaseVersion getReleaseVersion() {
+      return releaseVersion;
+   }
+
+   public Commit setReleaseVersion(ReleaseVersion releaseVersion) {
+      this.releaseVersion = releaseVersion;
       return this;
    }
 }

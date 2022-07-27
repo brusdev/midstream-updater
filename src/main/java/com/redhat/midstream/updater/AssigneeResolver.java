@@ -51,19 +51,21 @@ public class AssigneeResolver {
          return user;
       }
 
-      user = userResolver.getUserFromUpstreamUsername(upstreamIssue.getAssignee());
-      if (user != null) {
-         return user;
-      }
+      if (upstreamIssue != null) {
+         user = userResolver.getUserFromUpstreamUsername(upstreamIssue.getAssignee());
+         if (user != null) {
+            return user;
+         }
 
-      user = userResolver.getUserFromUpstreamUsername(upstreamIssue.getReporter());
-      if (user != null) {
-         return user;
-      }
+         user = userResolver.getUserFromUpstreamUsername(upstreamIssue.getReporter());
+         if (user != null) {
+            return user;
+         }
 
-      user = userResolver.getUserFromUpstreamUsername(upstreamIssue.getCreator());
-      if (user != null) {
-         return user;
+         user = userResolver.getUserFromUpstreamUsername(upstreamIssue.getCreator());
+         if (user != null) {
+            return user;
+         }
       }
 
       if (downstreamIssues != null) {
