@@ -8,6 +8,8 @@ import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.io.FileUtils;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.revwalk.RevCommit;
@@ -16,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.nio.charset.Charset;
 import java.util.AbstractMap;
 import java.util.ArrayDeque;
@@ -368,6 +371,25 @@ public class App {
 
          // Store downstream issues
          FileUtils.writeStringToFile(downstreamIssuesFile, gson.toJson(downstreamIssues.values()), Charset.defaultCharset());
+      }
+
+      File payloadFile = new File(targetDir, "payload.csv");
+      try (CSVPrinter printer = new CSVPrinter(new FileWriter(payloadFile), CSVFormat.DEFAULT
+         .withHeader(new String[]{ "state", "release", "commit", "author", "summary", "upstreamIssue", "downstreamIssues", "upstreamTestCoverage"}))) {
+
+         for (Commit commit : commits.stream()
+            .filter(commit -> (commit.getState() == CommitState.DONE && commit.getDownstreamCommit() != null && commit.getReleaseVersion().compareWithoutQualifierTo(candidateReleaseVersion) == 0))
+            .collect(Collectors.toList())) {
+            printer.printRecord(commit.getState(), commit.getReleaseVersion(), commit.getUpstreamCommit(), commit.getAuthor(), commit.getSummary(),
+                                commit.getUpstreamIssue(), String.join(",", commit.getDownstreamIssues()), commit.hasUpstreamTestCoverage());
+         }
+
+         for (Commit commit : commits.stream()
+            .filter(commit -> ((commit.getState() != CommitState.SKIPPED && commit.getState() != CommitState.DONE) || (commit.getState() == CommitState.DONE && commit.getTasks().size() > 0)))
+            .collect(Collectors.toList())) {
+            printer.printRecord(commit.getState(), commit.getReleaseVersion(), commit.getUpstreamCommit(), commit.getAuthor(), commit.getSummary(),
+                                commit.getUpstreamIssue(), String.join(",", commit.getDownstreamIssues()), commit.hasUpstreamTestCoverage());
+         }
       }
    }
 }
