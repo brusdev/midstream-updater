@@ -29,7 +29,10 @@ import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -40,6 +43,7 @@ public class IssueClient {
    private final static String TARGET_RELEASE_FIELD = "customfield_12311240";
 
    private final static Pattern upstreamIssuePattern = Pattern.compile("ARTEMIS-[0-9]+");
+   private final static Pattern securityImpactPattern = Pattern.compile("Impact: (Critical|Important|Moderate|Low)");
 
    private String serverURL;
    private String authString;
@@ -295,37 +299,65 @@ public class IssueClient {
    }
 
    public Issue[] loadProjectIssues(String projectKey, boolean parseCustomFields) throws Exception {
-      int start = 0;
-      int total;
-      int maxResults;
-      List<Issue> issues = new ArrayList<>();
+      int total = 0;
+      final int MAX_RESULTS = 250;
+      List<Issue> issues = Collections.synchronizedList(new ArrayList<>());
 
-      do {
-         HttpURLConnection connection = createConnection("/search?jql=project=%22" + projectKey + "%22&fields=*all&maxResults=250&startAt=" + start);
-         try {
-            try (InputStreamReader inputStreamReader = new InputStreamReader(connection.getInputStream())) {
-               JsonObject jsonObject = JsonParser.parseReader(inputStreamReader).getAsJsonObject();
+      HttpURLConnection searchConnection = createConnection("/search?jql=project=%22" + projectKey + "%22&maxResults=0");
+      try {
+         try (InputStreamReader inputStreamReader = new InputStreamReader(searchConnection.getInputStream())) {
+            JsonObject jsonObject = JsonParser.parseReader(inputStreamReader).getAsJsonObject();
 
-               total = jsonObject.getAsJsonPrimitive("total").getAsInt();
-               maxResults = jsonObject.getAsJsonPrimitive("maxResults").getAsInt();
-
-               JsonArray issuesArray = jsonObject.getAsJsonArray("issues");
-
-               for (JsonElement issueElement : issuesArray) {
-                  JsonObject issueObject = issueElement.getAsJsonObject();
-
-                  issues.add(parseIssue(issueObject, parseCustomFields));
-               }
-
-               start = start + maxResults;
-            }
-         } finally {
-            connection.disconnect();
+            total = jsonObject.getAsJsonPrimitive("total").getAsInt();
          }
-      } while (start < total);
+      } finally {
+         searchConnection.disconnect();
+      }
+
+      int taskCount = (int)Math.ceil((double)total / (double)MAX_RESULTS);
+      List<Callable<Integer>> tasks = new ArrayList<>();
+
+      for (int i = 0; i < taskCount; i++) {
+         final int start = i * MAX_RESULTS;
+
+         tasks.add(() -> loadProjectIssues(projectKey, parseCustomFields, start, MAX_RESULTS, issues));
+      }
+
+      long beginTimestamp = System.nanoTime();
+      Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors()).invokeAll(tasks);
+      long endTimestamp = System.nanoTime();
+
+      logger.info("Loaded " + issues.size() + " issues in " + (endTimestamp - beginTimestamp) / 1000000 + " milliseconds");
 
       return issues.toArray(Issue[]::new);
    }
+
+
+   public int loadProjectIssues(String projectKey, boolean parseCustomFields, int start, int maxResults, List<Issue> issues) throws Exception {
+      int result = 0;
+
+      HttpURLConnection connection = createConnection("/search?jql=project=%22" + projectKey + "%22&fields=*all&maxResults=" + maxResults + "&startAt=" + start);
+      try {
+         try (InputStreamReader inputStreamReader = new InputStreamReader(connection.getInputStream())) {
+            JsonObject jsonObject = JsonParser.parseReader(inputStreamReader).getAsJsonObject();
+
+            JsonArray issuesArray = jsonObject.getAsJsonArray("issues");
+
+            for (JsonElement issueElement : issuesArray) {
+               JsonObject issueObject = issueElement.getAsJsonObject();
+
+               issues.add(parseIssue(issueObject, parseCustomFields));
+
+               result++;
+            }
+         }
+      } finally {
+         connection.disconnect();
+      }
+
+      return result;
+   }
+
 
    private Issue parseIssue(JsonObject issueObject, boolean parseCustomFields) {
       String issueKey = issueObject.getAsJsonPrimitive("key").getAsString();
@@ -361,6 +393,9 @@ public class IssueClient {
          }
       }
 
+      issue.setCustomerPriority(CustomerPriority.NONE);
+      issue.setSecurityImpact(SecurityImpact.NONE);
+
       if (parseCustomFields) {
          //"id":"customfield_12314640","name":"Upstream Jira"
          JsonElement upstreamJiraElement = issueFields.get("customfield_12314640");
@@ -392,10 +427,18 @@ public class IssueClient {
             (helpDeskTicketReferenceElement != null && !helpDeskTicketReferenceElement.isJsonNull()) ||
             (supportCaseReferenceElement != null && !supportCaseReferenceElement.isJsonNull()) ||
             (linksElement != null && !linksElement.isJsonNull() && linksElement.toString().matches("PATCH-[0-9]+]")));
+         issue.setCustomerPriority(gssPriorityElement != null && !gssPriorityElement.isJsonNull() ? CustomerPriority.fromName(
+            gssPriorityElement.getAsJsonObject().get("value").getAsString()) : CustomerPriority.NONE);
 
          //"id":"customfield_12311640","name":"Security Sensitive Issue"
          JsonElement securitySensitiveIssueElement = issueFields.get("customfield_12311640");
          issue.setSecurity(securitySensitiveIssueElement != null && !securitySensitiveIssueElement.isJsonNull());
+         if (issueDescription != null && issueDescription.startsWith("Security Tracking Issue")) {
+            Matcher securityImpactMatcher = securityImpactPattern.matcher(issueDescription);
+            if (securityImpactMatcher.find()) {
+               issue.setSecurityImpact(SecurityImpact.fromName(securityImpactMatcher.group(1)));
+            }
+         }
       }
 
       return issue;

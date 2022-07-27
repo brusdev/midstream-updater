@@ -33,7 +33,9 @@ public class Issue {
    private List<String> issues;
 
    private boolean customer;
+   private CustomerPriority customerPriority;
    private boolean security;
+   private SecurityImpact securityImpact;
    private String targetRelease;
 
    public String getDescription() {
@@ -87,6 +89,24 @@ public class Issue {
 
    public Issue setSecurity(boolean security) {
       this.security = security;
+      return this;
+   }
+
+   public CustomerPriority getCustomerPriority() {
+      return customerPriority;
+   }
+
+   public Issue setCustomerPriority(CustomerPriority customerPriority) {
+      this.customerPriority = customerPriority;
+      return this;
+   }
+
+   public SecurityImpact getSecurityImpact() {
+      return securityImpact;
+   }
+
+   public Issue setSecurityImpact(SecurityImpact securityImpact) {
+      this.securityImpact = securityImpact;
       return this;
    }
 
