@@ -24,6 +24,8 @@ import com.google.gson.JsonParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
@@ -33,6 +35,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -89,34 +92,29 @@ public class IssueClient {
       return parseIssue(getIssue(issueKey), true);
    }
 
-   public Issue cloneIssue(String projectKey, String cloningIssueKey, String targetRelease) throws Exception {
+   public Issue cloneIssue(String projectKey, String cloningIssueKey, String summaryPrefix, Predicate<String> labelFilter, String targetRelease) throws Exception {
       JsonObject issueObject = getIssue(cloningIssueKey);
-      {
-         JsonObject fieldsObject = issueObject.getAsJsonObject("fields");
 
-         // Set target release
-         fieldsObject.remove(TARGET_RELEASE_FIELD);
-         JsonObject targetReleaseObject = new JsonObject();
-         targetReleaseObject.addProperty("name", targetRelease);
-         fieldsObject.add(TARGET_RELEASE_FIELD, targetReleaseObject);
+      Issue cloningIssue = parseIssue(issueObject, true);
 
-         JsonArray issueLinksObject = issueObject.getAsJsonArray("issuelinks");
-
-         // Add cloned issue link
-         JsonObject issueLinkObject = new JsonObject();
-         JsonObject issueLinkTypeObject = new JsonObject();
-         issueLinkTypeObject.addProperty("name", "Cloners");
-         issueLinkObject.add("type", issueLinkTypeObject);
-         JsonObject outwardIssue = new JsonObject();
-         outwardIssue.addProperty("key", cloningIssueKey);
-         issueLinkObject.add("outwardIssue", outwardIssue);
-         fieldsObject.add(TARGET_RELEASE_FIELD, targetReleaseObject);
-         issueLinksObject.add(issueLinkObject);
+      if (cloningIssue.getIssues().size() != 1) {
+         throw new IllegalStateException("Invalid number of upstream issues to clone");
       }
 
-      String issueKey = postIssue(issueObject);
+      List<String> labels = new ArrayList<>();
+      for (String label : cloningIssue.getLabels()) {
+         if (labelFilter == null || labelFilter.test(label)) {
+            labels.add(label);
+         }
+      }
 
-      return parseIssue(getIssue(issueKey), true);
+      Issue clonedIssue = createIssue(projectKey, summaryPrefix + " " + cloningIssue.getSummary(),
+                                      cloningIssue.getDescription(), cloningIssue.getType(), cloningIssue.getAssignee(),
+                                      cloningIssue.getIssues().get(0), targetRelease, labels);
+
+      linkIssue(clonedIssue.getKey(), cloningIssueKey, "Cloners");
+
+      return clonedIssue;
    }
 
    private String postIssue(JsonObject issueObject) throws Exception {
@@ -129,12 +127,17 @@ public class IssueClient {
             outputStreamWriter.write(issueObject.toString());
          }
 
-         try (InputStreamReader inputStreamReader = new InputStreamReader(connection.getInputStream())) {
-            JsonObject responseObject = JsonParser.parseReader(inputStreamReader).getAsJsonObject();
+         try {
+            try (InputStreamReader inputStreamReader = new InputStreamReader(getConnectionInputStream(connection))) {
+               JsonObject responseObject = JsonParser.parseReader(inputStreamReader).getAsJsonObject();
 
-            String issueKey = responseObject.getAsJsonPrimitive("key").getAsString();
+               String issueKey = responseObject.getAsJsonPrimitive("key").getAsString();
 
-            return issueKey;
+               return issueKey;
+            }
+         } catch (Exception e) {
+            logger.error(new String(connection.getErrorStream().readAllBytes()), e);
+            throw e;
          }
       } finally {
          connection.disconnect();
@@ -176,6 +179,52 @@ public class IssueClient {
       }
    }
 
+   public void linkIssue(String issueKey, String cloningIssueKey, String linkType) throws Exception {
+
+      JsonObject issueLinkObject = new JsonObject();
+      JsonObject issueLinkTypeObject = new JsonObject();
+      issueLinkTypeObject.addProperty("name", linkType);
+      issueLinkObject.add("type", issueLinkTypeObject);
+      JsonObject inwardIssue = new JsonObject();
+      inwardIssue.addProperty("key", issueKey);
+      issueLinkObject.add("inwardIssue", inwardIssue);
+      JsonObject outwardIssue = new JsonObject();
+      outwardIssue.addProperty("key", cloningIssueKey);
+      issueLinkObject.add("outwardIssue", outwardIssue);
+
+      HttpURLConnection connection = createConnection("/issueLink");
+      try {
+         connection.setDoOutput(true);
+         connection.setRequestMethod("POST");
+
+         try (OutputStreamWriter outputStreamWriter= new OutputStreamWriter(connection.getOutputStream())) {
+            outputStreamWriter.write(issueLinkObject.toString());
+         }
+
+         try (InputStream inputStream = getConnectionInputStream(connection)) {
+            logger.debug("linkIssueResponse: " + new String(inputStream.readAllBytes()));
+         }
+      } finally {
+         connection.disconnect();
+      }
+   }
+
+   private InputStream getConnectionInputStream(HttpURLConnection connection) throws IOException {
+      try {
+         return connection.getInputStream();
+      } catch (Exception e) {
+         try (InputStream errorStream = connection.getErrorStream()) {
+            if (errorStream != null) {
+               logger.error(new String(errorStream.readAllBytes()), e);
+               errorStream.close();
+            } else {
+               logger.error("ConnectionException: ", e);
+            }
+         }
+         throw e;
+      }
+   }
+
    public void setIssueTargetRelease(String issueKey, String targetRelease) throws Exception {
 
       JsonObject updatingIssueObject = new JsonObject();
@@ -200,7 +249,9 @@ public class IssueClient {
             outputStreamWriter.write(issueObject.toString());
          }
 
-         connection.getInputStream().close();
+         try (InputStream inputStream = getConnectionInputStream(connection)) {
+            logger.debug("putIssueResponse: " + new String(inputStream.readAllBytes()));
+         }
       } finally {
          connection.disconnect();
       }

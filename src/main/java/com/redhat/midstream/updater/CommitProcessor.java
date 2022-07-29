@@ -68,6 +68,7 @@ public class CommitProcessor {
    private CustomerPriority downstreamIssuesCustomerPriority;
    private SecurityImpact downstreamIssuesSecurityImpact;
    private boolean checkIncompleteCommits;
+   private boolean scratch;
 
 
    public CommitProcessor(Git git, ReleaseVersion candidateReleaseVersion, boolean requireReleaseIssues,
@@ -78,7 +79,7 @@ public class CommitProcessor {
                           Map<String, Issue> confirmedDownstreamIssues,
                           CustomerPriority downstreamIssuesCustomerPriority,
                           SecurityImpact downstreamIssuesSecurityImpact,
-                          boolean checkIncompleteCommits) {
+                          boolean checkIncompleteCommits, boolean scratch) {
       this.git = git;
       this.candidateReleaseVersion = candidateReleaseVersion;
       this.requireReleaseIssues = requireReleaseIssues;
@@ -94,6 +95,7 @@ public class CommitProcessor {
       this.downstreamIssuesCustomerPriority = downstreamIssuesCustomerPriority;
       this.downstreamIssuesSecurityImpact = downstreamIssuesSecurityImpact;
       this.checkIncompleteCommits = checkIncompleteCommits;
+      this.scratch = scratch;
    }
 
    public Commit process(RevCommit upstreamCommit) throws Exception {
@@ -133,6 +135,8 @@ public class CommitProcessor {
 
       Issue upstreamIssue = null;
       if (upstreamIssueKey != null) {
+         commit.setUpstreamIssue(upstreamIssueKey);
+
          if (upstreamIssueMatcher.find() && cherryPickedCommit == null) {
             logger.warn("SKIPPED because the commit message includes multiple upstream issue keys");
             commit.setState(CommitState.SKIPPED).setReason("MULTIPLE_UPSTREAM_ISSUES");
@@ -140,8 +144,6 @@ public class CommitProcessor {
          }
 
          upstreamIssue = upstreamIssueKey != null ? upstreamIssues.get(upstreamIssueKey) : null;
-
-         commit.setUpstreamIssue(upstreamIssue.getKey());
 
          if (upstreamIssue == null && cherryPickedCommit == null) {
             logger.warn("SKIPPED because the upstream issue is not found: " + upstreamIssueKey);
@@ -152,7 +154,7 @@ public class CommitProcessor {
 
 
       commit.setAuthor(upstreamCommit.getAuthorIdent().getName());
-      commit.setReleaseVersion(candidateReleaseVersion);
+      commit.setReleaseVersion(candidateReleaseVersion.toString());
       commit.setDownstreamCommit(cherryPickedCommit != null ? cherryPickedCommit.getValue().getName() : null);
       commit.setUpstreamTestCoverage(hasTestCoverage(upstreamCommit));
 
@@ -182,13 +184,22 @@ public class CommitProcessor {
          if (cherryPickedCommit != null) {
             // Commit cherry-picked, check the downstream issues
 
-            if(release.equals(selectedTargetRelease)) {
-               processDownstreamIssues(commit, release, qualifier, selectedDownstreamIssues, confirmedTasks, assignee);
-            } else {
-               if (requireReleaseIssues) {
-                  if (checkIncompleteCommits) {
+            if (this.candidateReleaseVersion.compareWithoutQualifierTo(candidateReleaseVersion) == 0) {
+               if(release.equals(selectedTargetRelease)) {
+                  if (processDownstreamIssues(commit, release, qualifier, selectedDownstreamIssues, confirmedTasks, assignee)) {
+                     commit.setState(CommitState.DONE);
+                  } else {
+                     commit.setState(CommitState.INCOMPLETE);
+                  }
+               } else {
+                  if (requireReleaseIssues) {
                      logger.warn("INCOMPLETE because no downstream issues with the required target release");
-                     commit.setState(CommitState.INCOMPLETE).setReason("NO_DOWNSTREAM_ISSUES_WITH_REQUIRED_TARGET_RELEASE");
+
+                     if (cloneDownstreamIssues(commit, release, qualifier, selectedDownstreamIssues, confirmedTasks, assignee)) {
+                        commit.setState(CommitState.DONE);
+                     } else {
+                        commit.setState(CommitState.INCOMPLETE).setReason("NO_DOWNSTREAM_ISSUES_WITH_REQUIRED_TARGET_RELEASE");
+                     }
                   }
                }
             }
@@ -201,11 +212,13 @@ public class CommitProcessor {
                if (processCommitTask(commit, release, qualifier, CommitTaskType.CHERRY_PICK_UPSTREAM_COMMIT, upstreamCommit.getName(),
                   selectedDownstreamIssues.stream().map(Issue::getKey).collect(Collectors.joining(",")), confirmedTasks, assignee)) {
 
-                  commit.setState(CommitState.DONE);
-
-                  processDownstreamIssues(commit, release, qualifier, selectedDownstreamIssues, confirmedTasks, assignee);
+                  if (processDownstreamIssues(commit, release, qualifier, selectedDownstreamIssues, confirmedTasks, assignee)) {
+                     commit.setState(CommitState.DONE);
+                  } else {
+                     commit.setState(CommitState.INCOMPLETE);
+                  }
                } else {
-                  commit.setState(CommitState.CONFLICTED);
+                  commit.setState(CommitState.TODO);
                }
             } else {
                // The selected downstream issues do not have the required target release
@@ -216,10 +229,10 @@ public class CommitProcessor {
                   if (requireReleaseIssues) {
                      // The commits related to downstream issues already fixed in a previous release require
                      // a downstream release issue if cherry-picked to a branch with previous releases
-                     commit.setState(CommitState.BLOCKED);
-
-                     for (Issue downstreamIssue : selectedDownstreamIssues) {
-                        processCommitTask(commit, release, qualifier, CommitTaskType.CLONE_DOWNSTREAM_ISSUE, downstreamIssue.getKey(), null, confirmedTasks, assignee);
+                     if (cloneDownstreamIssues(commit, release, qualifier, selectedDownstreamIssues, confirmedTasks, assignee)) {
+                        commit.setState(CommitState.DONE);
+                     } else {
+                        commit.setState(CommitState.BLOCKED).setReason("NO_DOWNSTREAM_ISSUES_WITH_REQUIRED_TARGET_RELEASE");
                      }
                   } else {
                      // The commits related to downstream issues already fixed in a previous release do not require
@@ -229,6 +242,8 @@ public class CommitProcessor {
                         selectedDownstreamIssues.stream().map(Issue::getKey).collect(Collectors.joining(",")), confirmedTasks, assignee)) {
 
                         commit.setState(CommitState.DONE);
+                     } else {
+                        commit.setState(CommitState.TODO);
                      }
                   }
                } else {
@@ -241,12 +256,16 @@ public class CommitProcessor {
 
          if (cherryPickedCommit != null) {
             // Commit cherry-picked but no downstream issues
-            if (checkIncompleteCommits) {
-               logger.warn("INCOMPLETE because no downstream issues");
-               commit.setState(CommitState.INCOMPLETE).setReason("NO_DOWNSTREAM_ISSUES");
+            if (this.candidateReleaseVersion.compareWithoutQualifierTo(candidateReleaseVersion) == 0) {
+               if (!commit.getSummary().startsWith("NO-JIRA")) {
+                  if (checkIncompleteCommits) {
+                     logger.warn("INCOMPLETE because no downstream issues");
+                     commit.setState(CommitState.INCOMPLETE).setReason("NO_DOWNSTREAM_ISSUES");
+                  }
+               }
             }
          } else {
-            // Commit cherry-picked but no downstream issues
+            // Commit not cherry-picked and no downstream issues
 
             if ((confirmedUpstreamIssues != null && confirmedUpstreamIssues.containsKey(upstreamIssue.getKey())) ||
                (confirmedUpstreamIssues == null && upstreamIssue.getType() == IssueType.BUG)) {
@@ -274,21 +293,31 @@ public class CommitProcessor {
       return false;
    }
 
-   private void processDownstreamIssues(Commit commit, String release, String qualifier, List<Issue> downstreamIssues, List<CommitTask> confirmedTasks, User assignee) throws Exception {
+   private boolean cloneDownstreamIssues(Commit commit, String release, String qualifier, List<Issue> downstreamIssues, List<CommitTask> confirmedTasks, User assignee) throws Exception {
+      boolean executed = true;
+
+      for (Issue downstreamIssue : downstreamIssues) {
+         executed &= processCommitTask(commit, release, qualifier, CommitTaskType.CLONE_DOWNSTREAM_ISSUE, downstreamIssue.getKey(), null, confirmedTasks, assignee);
+      }
+
+      return executed;
+   }
+
+   private boolean processDownstreamIssues(Commit commit, String release, String qualifier, List<Issue> downstreamIssues, List<CommitTask> confirmedTasks, User assignee) throws Exception {
+      boolean executed = true;
+
       for (Issue downstreamIssue : downstreamIssues) {
          //Check if the downstream issue define a target release
          if (downstreamIssue.getTargetRelease() == null || downstreamIssue.getTargetRelease().isEmpty() || downstreamIssue.getTargetRelease().equals(FUTURE_GA_RELEASE)) {
             if (checkIncompleteCommits) {
-               commit.setState(CommitState.INCOMPLETE);
-               processCommitTask(commit, release, qualifier, CommitTaskType.SET_DOWNSTREAM_ISSUE_TARGET_RELEASE, downstreamIssue.getKey(), release, confirmedTasks, assignee);
+               executed &= processCommitTask(commit, release, qualifier, CommitTaskType.SET_DOWNSTREAM_ISSUE_TARGET_RELEASE, downstreamIssue.getKey(), release, confirmedTasks, assignee);
             }
          }
 
          //Check if the downstream issue has the qualifier label
          if (!downstreamIssue.getLabels().contains(qualifier)) {
             if (checkIncompleteCommits) {
-               commit.setState(CommitState.INCOMPLETE);
-               processCommitTask(commit, release, qualifier, CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL, downstreamIssue.getKey(), qualifier, confirmedTasks, assignee);
+               executed &= processCommitTask(commit, release, qualifier, CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL, downstreamIssue.getKey(), qualifier, confirmedTasks, assignee);
             }
          }
 
@@ -296,23 +325,23 @@ public class CommitProcessor {
          if (commit.hasUpstreamTestCoverage() && !downstreamIssue.getLabels().contains(UPSTREAM_TEST_COVERAGE_LABEL) &&
             !downstreamIssue.getLabels().contains(NO_TESTING_NEEDED_LABEL)){
             if (checkIncompleteCommits) {
-               commit.setState(CommitState.INCOMPLETE);
-               processCommitTask(commit, release, qualifier, CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL, downstreamIssue.getKey(), UPSTREAM_TEST_COVERAGE_LABEL, confirmedTasks, assignee);
+               executed &= processCommitTask(commit, release, qualifier, CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL, downstreamIssue.getKey(), UPSTREAM_TEST_COVERAGE_LABEL, confirmedTasks, assignee);
             }
          }
 
          //Check if the downstream issue is ready for review
          if (downstreamIssue.getState() != IssueState.READY_FOR_REVIEW && downstreamIssue.getState() != IssueState.CLOSED) {
             if (checkIncompleteCommits) {
-               commit.setState(CommitState.INCOMPLETE);
-               processCommitTask(commit, release, qualifier, CommitTaskType.TRANSITION_DOWNSTREAM_ISSUE, downstreamIssue.getKey(), IssueState.READY_FOR_REVIEW.name(), confirmedTasks, assignee);
+               executed &= processCommitTask(commit, release, qualifier, CommitTaskType.TRANSITION_DOWNSTREAM_ISSUE, downstreamIssue.getKey(), IssueState.READY_FOR_REVIEW.name(), confirmedTasks, assignee);
             }
          }
       }
+
+      return executed;
    }
 
    private boolean processCommitTask(Commit commit, String release, String qualifier, CommitTaskType type, String key, String value, List<CommitTask> confirmedTasks, User assignee) throws Exception {
-      boolean executed = false;
+      CommitTask commitTask = new CommitTask().setType(type).setKey(key).setValue(value).setAssignee(assignee.getUsername()).setState(CommitTaskState.UNCONFIRMED);
       CommitTask confirmedTask = getCommitTask(type, key, value, confirmedTasks);
 
       if (type == CommitTaskType.CHERRY_PICK_UPSTREAM_COMMIT) {
@@ -320,69 +349,84 @@ public class CommitProcessor {
          CherryPickResult cherryPickResult = git.cherryPick().include(upstreamCommit).setNoCommit(true).call();
 
          if (cherryPickResult.getStatus() == CherryPickResult.CherryPickStatus.OK) {
-            String commitMessage = upstreamCommit.getFullMessage() + "\n" +
-               "(cherry picked from commit " + upstreamCommit.getName() + ")\n\n" +
-               "downstream: " + value;
+            if (scratch) {
+               commitTask.setState(CommitTaskState.SCRATCHED);
+            } else {
+               String commitMessage = upstreamCommit.getFullMessage() + "\n" +
+                  "(cherry picked from commit " + upstreamCommit.getName() + ")\n\n" +
+                  "downstream: " + value;
 
-            RevCommit cherryPickedCommit = git.commit().setMessage(commitMessage)
-               .setAuthor(upstreamCommit.getAuthorIdent())
-               .setCommitter(COMMITTER_NAME, COMMITTER_EMAIL)
-               .call();
+               RevCommit cherryPickedCommit = git.commit().setMessage(commitMessage)
+                  .setAuthor(upstreamCommit.getAuthorIdent())
+                  .setCommitter(COMMITTER_NAME, COMMITTER_EMAIL)
+                  .call();
 
-            cherryPickedCommits.put(upstreamCommit.getName(), new AbstractMap.SimpleEntry(candidateReleaseVersion, cherryPickedCommit));
+               cherryPickedCommits.put(upstreamCommit.getName(), new AbstractMap.SimpleEntry(candidateReleaseVersion, cherryPickedCommit));
 
-            executed = true;
+               commitTask.setState(CommitTaskState.EXECUTED);
+               commitTask.setResult(cherryPickedCommit.getName());
+            }
          } else {
             logger.warn("Error cherry picking: " + cherryPickResult.getStatus());
 
             git.reset().setMode(ResetCommand.ResetType.HARD).call();
 
-            executed = false;
+            commitTask.setState(CommitTaskState.FAILED);
+            commitTask.setResult(cherryPickResult.getStatus().toString());
          }
       } else if (confirmedTask != null) {
-         if (type == CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL) {
-            downstreamIssueClient.addIssueLabels(key, value);
-            downstreamIssues.get(key).getLabels().add(value);
-         } else if (type == CommitTaskType.SET_DOWNSTREAM_ISSUE_TARGET_RELEASE) {
-            downstreamIssueClient.setIssueTargetRelease(key, value);
-            downstreamIssues.get(key).setTargetRelease(value);
-         } else if (type == CommitTaskType.TRANSITION_DOWNSTREAM_ISSUE) {
-            IssueState downstreamIssueState = IssueState.valueOf(value);
-            downstreamIssueClient.transitionIssue(key, downstreamIssueState);
-            downstreamIssues.get(key).setState(downstreamIssueState);
-         } else if (type == CommitTaskType.CLONE_DOWNSTREAM_ISSUE) {
-            Issue downstreamIssue = downstreamIssueClient.cloneIssue("ENTMQBR", key, release);
-
-            for (String upstreamIssueKey : downstreamIssue.getIssues()) {
-               Issue upstreamIssue = upstreamIssues.get(upstreamIssueKey);
-               upstreamIssue.getIssues().add(downstreamIssue.getKey());
-            }
-
-            downstreamIssues.put(downstreamIssue.getKey(), downstreamIssue);
-         } else if (type == CommitTaskType.CLONE_UPSTREAM_ISSUE) {
-            Issue upstreamIssue = upstreamIssues.get(key);
-            List<String> labels = new ArrayList<>();
-            labels.add(qualifier);
-            if (commit.hasUpstreamTestCoverage()) {
-               labels.add(UPSTREAM_TEST_COVERAGE_LABEL);
-            }
-
-            Issue downstreamIssue = downstreamIssueClient.createIssue("ENTMQBR", upstreamIssue.getSummary(),
-               upstreamIssue.getDescription(), upstreamIssue.getType(), assignee.getDownstreamUsername(),
-               "https://issues.apache.org/jira/browse/" + upstreamIssue.getKey(), release, labels);
-
-            downstreamIssues.put(downstreamIssue.getKey(), downstreamIssue);
-            upstreamIssue.getIssues().add(downstreamIssue.getKey());
+         if (scratch) {
+            commitTask.setState(CommitTaskState.SCRATCHED);
          } else {
-            throw new IllegalStateException("Commit task type not supported: " + type);
-         }
+            if (type == CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL) {
+               downstreamIssueClient.addIssueLabels(key, value);
+               downstreamIssues.get(key).getLabels().add(value);
+            } else if (type == CommitTaskType.SET_DOWNSTREAM_ISSUE_TARGET_RELEASE) {
+               downstreamIssueClient.setIssueTargetRelease(key, value);
+               downstreamIssues.get(key).setTargetRelease(value);
+            } else if (type == CommitTaskType.TRANSITION_DOWNSTREAM_ISSUE) {
+               IssueState downstreamIssueState = IssueState.valueOf(value);
+               downstreamIssueClient.transitionIssue(key, downstreamIssueState);
+               downstreamIssues.get(key).setState(downstreamIssueState);
+            } else if (type == CommitTaskType.CLONE_DOWNSTREAM_ISSUE) {
+               ReleaseVersion releaseVersion = new ReleaseVersion(release);
+               String summaryPrefix = "[" + releaseVersion.getMajor() + "." + releaseVersion.getMinor() + "]";
+               Issue downstreamIssue = downstreamIssueClient.cloneIssue("ENTMQBR", key, summaryPrefix,
+                                                                        label -> !label.startsWith("CR"), release);
 
-         executed = true;
+               for (String upstreamIssueKey : downstreamIssue.getIssues()) {
+                  Issue upstreamIssue = upstreamIssues.get(upstreamIssueKey);
+                  upstreamIssue.getIssues().add(downstreamIssue.getKey());
+               }
+
+               downstreamIssues.put(downstreamIssue.getKey(), downstreamIssue);
+               commitTask.setResult(downstreamIssue.getKey());
+            } else if (type == CommitTaskType.CLONE_UPSTREAM_ISSUE) {
+               Issue upstreamIssue = upstreamIssues.get(key);
+               List<String> labels = new ArrayList<>();
+               labels.add(qualifier);
+               if (commit.hasUpstreamTestCoverage()) {
+                  labels.add(UPSTREAM_TEST_COVERAGE_LABEL);
+               }
+
+               Issue downstreamIssue = downstreamIssueClient.createIssue("ENTMQBR", upstreamIssue.getSummary(),
+                                                                         upstreamIssue.getDescription(), upstreamIssue.getType(), assignee.getDownstreamUsername(),
+                                                                         "https://issues.apache.org/jira/browse/" + upstreamIssue.getKey(), release, labels);
+
+               downstreamIssues.put(downstreamIssue.getKey(), downstreamIssue);
+               upstreamIssue.getIssues().add(downstreamIssue.getKey());
+               commitTask.setResult(downstreamIssue.getKey());
+            } else {
+               throw new IllegalStateException("Commit task type not supported: " + type);
+            }
+
+            commitTask.setState(CommitTaskState.EXECUTED);
+         }
       }
 
-      commit.getTasks().add(new CommitTask().setType(type).setKey(key).setValue(value).setAssignee(assignee).setExecuted(executed));
+      commit.getTasks().add(commitTask);
 
-      return executed;
+      return CommitTaskState.EXECUTED.equals(commitTask.getState());
    }
 
    private CommitTask getCommitTask(CommitTaskType type, String key, String value, List<CommitTask> tasks) {

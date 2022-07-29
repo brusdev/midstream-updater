@@ -18,26 +18,18 @@
 package com.redhat.midstream.updater;
 
 public class CommitTask {
-   private boolean executed;
    private CommitTaskType type;
+   private CommitTaskState state;
    private String key;
    private String value;
-   private User assignee;
+   private String assignee;
+   private String result;
 
-   public boolean isExecuted() {
-      return executed;
-   }
-
-   public CommitTask setExecuted(boolean executed) {
-      this.executed = executed;
-      return this;
-   }
-
-   public User getAssignee() {
+   public String getAssignee() {
       return assignee;
    }
 
-   public CommitTask setAssignee(User assignee) {
+   public CommitTask setAssignee(String assignee) {
       this.assignee = assignee;
       return this;
    }
@@ -66,6 +58,24 @@ public class CommitTask {
 
    public CommitTask setKey(String key) {
       this.key = key;
+      return this;
+   }
+
+   public CommitTaskState getState() {
+      return state;
+   }
+
+   public CommitTask setState(CommitTaskState state) {
+      this.state = state;
+      return this;
+   }
+
+   public String getResult() {
+      return result;
+   }
+
+   public CommitTask setResult(String result) {
+      this.result = result;
       return this;
    }
 }

@@ -72,6 +72,21 @@ public class ReleaseVersion implements Comparable<ReleaseVersion> {
       }
    }
 
+   public static int compareWithoutQualifier(String releaseX, String releaseY) {
+      if (Objects.equals(releaseX, releaseY)) {
+         return 0;
+      } else if (releaseX == null || releaseX.isEmpty()) {
+         return -1;
+      } else if (releaseY == null || releaseY.isEmpty()) {
+         return 1;
+      } else {
+         ReleaseVersion releaseVersionX = new ReleaseVersion(releaseX);
+         ReleaseVersion releaseVersionY = new ReleaseVersion(releaseY);
+
+         return releaseVersionX.compareWithoutQualifierTo(releaseVersionY);
+      }
+   }
+
    @Override
    public String toString() {
       return major + "." + minor + "." + patch + "." + qualifier;

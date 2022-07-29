@@ -29,7 +29,7 @@ public class Commit {
    private String author;
    private String summary;
    private String reason;
-   private ReleaseVersion releaseVersion;
+   private String releaseVersion;
    private boolean upstreamTestCoverage;
    private List<CommitTask> tasks;
 
@@ -123,11 +123,11 @@ public class Commit {
       return this;
    }
 
-   public ReleaseVersion getReleaseVersion() {
+   public String getReleaseVersion() {
       return releaseVersion;
    }
 
-   public Commit setReleaseVersion(ReleaseVersion releaseVersion) {
+   public Commit setReleaseVersion(String releaseVersion) {
       this.releaseVersion = releaseVersion;
       return this;
    }
