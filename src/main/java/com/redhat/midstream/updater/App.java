@@ -384,14 +384,14 @@ public class App {
             .filter(commit -> (commit.getState() == CommitState.DONE && commit.getDownstreamCommit() != null &&  candidateReleaseVersion.compareWithoutQualifierTo(new ReleaseVersion(commit.getReleaseVersion())) == 0))
             .collect(Collectors.toList())) {
             printer.printRecord(commit.getState(), commit.getReleaseVersion(), commit.getUpstreamCommit(), commit.getAuthor(), commit.getSummary(),
-                                commit.getUpstreamIssue(), String.join(",", commit.getDownstreamIssues()), commit.hasUpstreamTestCoverage());
+                                commit.getUpstreamIssue(), String.join(",", commit.getDownstreamIssues()), commit.getTests().size() > 0);
          }
 
          for (Commit commit : commits.stream()
             .filter(commit -> ((commit.getState() != CommitState.SKIPPED && commit.getState() != CommitState.DONE) || (commit.getState() == CommitState.DONE && commit.getTasks().size() > 0)))
             .collect(Collectors.toList())) {
             printer.printRecord(commit.getState(), commit.getReleaseVersion(), commit.getUpstreamCommit(), commit.getAuthor(), commit.getSummary(),
-                                commit.getUpstreamIssue(), String.join(",", commit.getDownstreamIssues()), commit.hasUpstreamTestCoverage());
+                                commit.getUpstreamIssue(), String.join(",", commit.getDownstreamIssues()), commit.getTests().size() > 0);
          }
       }
    }

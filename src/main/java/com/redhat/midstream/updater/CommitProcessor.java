@@ -17,6 +17,9 @@
 
 package com.redhat.midstream.updater;
 
+import org.apache.maven.plugin.surefire.log.api.NullConsoleLogger;
+import org.apache.maven.plugins.surefire.report.ReportTestSuite;
+import org.apache.maven.plugins.surefire.report.SurefireReportParser;
 import org.eclipse.jgit.api.CherryPickResult;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
@@ -27,6 +30,10 @@ import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -37,6 +44,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class CommitProcessor {
    private final static Logger logger = LoggerFactory.getLogger(CommitProcessor.class);
@@ -52,6 +60,8 @@ public class CommitProcessor {
    private static final String COMMITTER_EMAIL = "messaging-infra@redhat.com";
 
    private static final String FUTURE_GA_RELEASE = "Future GA";
+
+   private static final String TEST_PATH = "src/test/java/";
 
    private Git git;
    private ReleaseVersion candidateReleaseVersion;
@@ -156,7 +166,7 @@ public class CommitProcessor {
       commit.setAuthor(upstreamCommit.getAuthorIdent().getName());
       commit.setReleaseVersion(candidateReleaseVersion.toString());
       commit.setDownstreamCommit(cherryPickedCommit != null ? cherryPickedCommit.getValue().getName() : null);
-      commit.setUpstreamTestCoverage(hasTestCoverage(upstreamCommit));
+      commit.setTests(getCommitTests(upstreamCommit));
 
 
       // Select downstream issues
@@ -322,7 +332,7 @@ public class CommitProcessor {
          }
 
          //Check if the downstream issue has the upstream-test-coverage label
-         if (commit.hasUpstreamTestCoverage() && !downstreamIssue.getLabels().contains(UPSTREAM_TEST_COVERAGE_LABEL) &&
+         if (commit.getTests().size() > 0 && !downstreamIssue.getLabels().contains(UPSTREAM_TEST_COVERAGE_LABEL) &&
             !downstreamIssue.getLabels().contains(NO_TESTING_NEEDED_LABEL)){
             if (checkIncompleteCommits) {
                executed &= processCommitTask(commit, release, qualifier, CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL, downstreamIssue.getKey(), UPSTREAM_TEST_COVERAGE_LABEL, confirmedTasks, assignee);
@@ -340,6 +350,48 @@ public class CommitProcessor {
       return executed;
    }
 
+   private boolean testCommit(Commit commit) throws Exception {
+      if (commit.getTests().size() > 0) {
+         //Execute tests
+         ProcessBuilder mavenProcessBuilder =
+            new ProcessBuilder("mvn",
+                               "--show-version",
+                               "--settings=/home/dbruscin/.m2/settings.xml",
+                               "--activate-profiles=dev,tests,redhat-ga,redhat-brew,redhat-pnc",
+                               "--define=failIfNoTests=false",
+                               "--define=test=" + String.join(",", commit.getTests()),
+                               "clean", "package")
+               .directory(git.getRepository().getDirectory().getParentFile())
+               .inheritIO();
+
+         Process mavenProcess = mavenProcessBuilder.start();
+
+         int mavenResult = mavenProcess.waitFor();
+
+         if (mavenResult != 0) {
+            return false;
+         }
+
+
+         //Check tests
+         List<File> surefireReportsDirectories = new ArrayList<>();
+         try (Stream<Path> walk = Files.walk(Paths.get(git.getRepository().getDirectory().getParent()))) {
+            walk.filter(path -> Files.isDirectory(path) && path.endsWith("surefire-reports"))
+               .forEach(path -> surefireReportsDirectories.add(path.toFile()));
+         }
+
+         SurefireReportParser surefireReportParser = new SurefireReportParser(surefireReportsDirectories, java.util.Locale.ENGLISH, new NullConsoleLogger());
+         List<ReportTestSuite> reportTestSuites = surefireReportParser.parseXMLReportFiles();
+         for (ReportTestSuite reportTestSuite : reportTestSuites) {
+            if (reportTestSuite.getNumberOfFailures() > 0) {
+               return false;
+            }
+         }
+      }
+
+      return true;
+   }
+
    private boolean processCommitTask(Commit commit, String release, String qualifier, CommitTaskType type, String key, String value, List<CommitTask> confirmedTasks, User assignee) throws Exception {
       CommitTask commitTask = new CommitTask().setType(type).setKey(key).setValue(value).setAssignee(assignee.getUsername()).setState(CommitTaskState.UNCONFIRMED);
       CommitTask confirmedTask = getCommitTask(type, key, value, confirmedTasks);
@@ -349,22 +401,32 @@ public class CommitProcessor {
          CherryPickResult cherryPickResult = git.cherryPick().include(upstreamCommit).setNoCommit(true).call();
 
          if (cherryPickResult.getStatus() == CherryPickResult.CherryPickStatus.OK) {
-            if (scratch) {
-               commitTask.setState(CommitTaskState.SCRATCHED);
+            if (!testCommit(commit)) {
+               logger.warn("Error testing: " + commit.getUpstreamCommit());
+
+               git.reset().setMode(ResetCommand.ResetType.HARD).call();
+
+               commitTask.setState(CommitTaskState.FAILED);
             } else {
-               String commitMessage = upstreamCommit.getFullMessage() + "\n" +
-                  "(cherry picked from commit " + upstreamCommit.getName() + ")\n\n" +
-                  "downstream: " + value;
+               if (scratch) {
+                  commitTask.setState(CommitTaskState.SCRATCHED);
+               } else {
+                  String commitMessage = upstreamCommit.getFullMessage() + "\n" +
+                     "(cherry picked from commit " + upstreamCommit.getName() + ")\n\n" +
+                     "downstream: " + value;
 
-               RevCommit cherryPickedCommit = git.commit().setMessage(commitMessage)
-                  .setAuthor(upstreamCommit.getAuthorIdent())
-                  .setCommitter(COMMITTER_NAME, COMMITTER_EMAIL)
-                  .call();
+                  RevCommit cherryPickedCommit = git.commit().setMessage(commitMessage)
+                     .setAuthor(upstreamCommit.getAuthorIdent())
+                     .setCommitter(COMMITTER_NAME, COMMITTER_EMAIL)
+                     .call();
 
-               cherryPickedCommits.put(upstreamCommit.getName(), new AbstractMap.SimpleEntry(candidateReleaseVersion, cherryPickedCommit));
+                  //git.push().setRemote("origin").call();
 
-               commitTask.setState(CommitTaskState.EXECUTED);
-               commitTask.setResult(cherryPickedCommit.getName());
+                  cherryPickedCommits.put(upstreamCommit.getName(), new AbstractMap.SimpleEntry(candidateReleaseVersion, cherryPickedCommit));
+
+                  commitTask.setState(CommitTaskState.EXECUTED);
+                  commitTask.setResult(cherryPickedCommit.getName());
+               }
             }
          } else {
             logger.warn("Error cherry picking: " + cherryPickResult.getStatus());
@@ -405,7 +467,7 @@ public class CommitProcessor {
                Issue upstreamIssue = upstreamIssues.get(key);
                List<String> labels = new ArrayList<>();
                labels.add(qualifier);
-               if (commit.hasUpstreamTestCoverage()) {
+               if (commit.getTests().size() > 0) {
                   labels.add(UPSTREAM_TEST_COVERAGE_LABEL);
                }
 
@@ -443,7 +505,8 @@ public class CommitProcessor {
       return null;
    }
 
-   private boolean hasTestCoverage(RevCommit upstreamCommit) throws Exception {
+   private List<String> getCommitTests(RevCommit upstreamCommit) throws Exception {
+      List<String> tests = new ArrayList<>();
       try (ObjectReader reader = git.getRepository().newObjectReader()) {
          CanonicalTreeParser oldTreeIter = new CanonicalTreeParser();
          CanonicalTreeParser newTreeIter = new CanonicalTreeParser();
@@ -453,15 +516,16 @@ public class CommitProcessor {
 
          List<DiffEntry> diffList = git.diff().setOldTree(oldTreeIter).setNewTree(newTreeIter).call();
 
-         for (DiffEntry entry : diffList) {
-            String path = entry.getNewPath();
-            if (path.contains("test")) {
-               return true;
+         for (DiffEntry diffEntry : diffList) {
+            String diffEntryPath = diffEntry.getNewPath();
+            if (diffEntryPath.contains(TEST_PATH) && diffEntryPath.endsWith("Test.java")) {
+               tests.add(diffEntryPath.substring(diffEntryPath.indexOf(TEST_PATH) + TEST_PATH.length(),
+                                                 diffEntryPath.length() - 5).replace('/', '.'));
             }
          }
       }
 
-      return false;
+      return tests;
    }
 
    private String selectRelease(Set<String> releases, String release) {

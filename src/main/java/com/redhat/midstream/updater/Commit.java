@@ -30,20 +30,21 @@ public class Commit {
    private String summary;
    private String reason;
    private String releaseVersion;
-   private boolean upstreamTestCoverage;
+   private List<String> tests;
    private List<CommitTask> tasks;
 
    public Commit() {
-      tasks = new ArrayList<>();
       downstreamIssues = new ArrayList<>();
+      tests = new ArrayList<>();
+      tasks = new ArrayList<>();
    }
 
-   public boolean hasUpstreamTestCoverage() {
-      return upstreamTestCoverage;
+   public List<String> getTests() {
+      return tests;
    }
 
-   public Commit setUpstreamTestCoverage(boolean upstreamTestCoverage) {
-      this.upstreamTestCoverage = upstreamTestCoverage;
+   public Commit setTests(List<String> tests) {
+      this.tests = tests;
       return this;
    }
 
