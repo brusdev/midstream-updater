@@ -17,7 +17,7 @@
 
 package com.redhat.midstream.updater;
 
-import org.eclipse.jgit.revwalk.RevCommit;
+import com.redhat.midstream.updater.git.GitCommit;
 
 import java.util.List;
 
@@ -38,15 +38,15 @@ public class AssigneeResolver {
       this.defaultAssignee = defaultAssignee;
    }
 
-   public User getAssignee(RevCommit upstreamCommit, Issue upstreamIssue, List<Issue> downstreamIssues) {
+   public User getAssignee(GitCommit upstreamCommit, Issue upstreamIssue, List<Issue> downstreamIssues) {
       User user;
 
-      user = userResolver.getUserFromEmailAddress(upstreamCommit.getAuthorIdent().getEmailAddress());
+      user = userResolver.getUserFromEmailAddress(upstreamCommit.getAuthorEmail());
       if (user != null) {
          return user;
       }
 
-      user = userResolver.getUserFromEmailAddress(upstreamCommit.getCommitterIdent().getEmailAddress());
+      user = userResolver.getUserFromEmailAddress(upstreamCommit.getCommitterEmail());
       if (user != null) {
          return user;
       }

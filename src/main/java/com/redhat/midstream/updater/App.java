@@ -2,6 +2,9 @@ package com.redhat.midstream.updater;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.redhat.midstream.updater.git.GitCommit;
+import com.redhat.midstream.updater.git.GitRepository;
+import com.redhat.midstream.updater.git.JGitRepository;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
@@ -11,9 +14,6 @@ import org.apache.commons.cli.ParseException;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.io.FileUtils;
-import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.revwalk.RevCommit;
-import org.eclipse.jgit.transport.URIish;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -143,28 +143,25 @@ public class App {
 
 
       // Initialize git
-      Git git;
+      GitRepository gitRepository = new JGitRepository();
       File repoDir = new File(targetDir, "activemq-artemis-repo");
 
       if (repoDir.exists()) {
-         git = Git.open(repoDir);
-         git.fetch().setRemote("origin").call();
-         git.fetch().setRemote("upstream").call();
+         gitRepository.open(repoDir);
+         gitRepository.fetch("origin");
+         gitRepository.fetch("upstream");
       } else {
-         git = Git.cloneRepository()
-            .setURI("https://github.com/rh-messaging/activemq-artemis.git")
-            .setDirectory(repoDir)
-            .call();
-         git.remoteAdd().setName("upstream").setUri(new URIish("https://github.com/apache/activemq-artemis.git")).call();
-         git.fetch().setRemote("upstream").call();
+         gitRepository.clone("https://github.com/rh-messaging/activemq-artemis.git", repoDir);
+         gitRepository.remoteAdd("upstream", "https://github.com/apache/activemq-artemis.git");
+         gitRepository.fetch("upstream");
       }
 
-      if (git.getRepository().resolve(midstreamBranch) != null) {
-         git.checkout().setName("upstream/" + upstreamBranch).setForced(true).call();
-         git.branchDelete().setBranchNames(midstreamBranch).setForce(true).call();
+      if (!gitRepository.branchExists(midstreamBranch)) {
+         gitRepository.checkout("upstream/" + upstreamBranch);
+         gitRepository.branchDelete(midstreamBranch);
       }
-      git.branchCreate().setName(midstreamBranch).setForce(true).setStartPoint("origin/" + midstreamBranch).call();
-      git.checkout().setName(midstreamBranch).setForced(true).call();
+      gitRepository.branchCreate(midstreamBranch, "origin/" + midstreamBranch);
+      gitRepository.checkout(midstreamBranch);
 
 
       // Initialize gson
@@ -246,13 +243,9 @@ public class App {
          FileUtils.writeStringToFile(downstreamIssuesFile, gson.toJson(downstreamIssuesArray), Charset.defaultCharset());
       }
 
-
       // Load upstream commits
-      Deque<RevCommit> upstreamCommits = new ArrayDeque<>();
-      for (RevCommit commit : git.log()
-         .not(git.getRepository().resolve("origin/" + midstreamBranch))
-         .add(git.getRepository().resolve("upstream/" + upstreamBranch))
-         .call()) {
+      Deque<GitCommit> upstreamCommits = new ArrayDeque<>();
+      for (GitCommit commit : gitRepository.log("upstream/" + upstreamBranch, "origin/" + midstreamBranch)) {
          if (!commit.getShortMessage().startsWith("Merge pull request")) {
             upstreamCommits.push(commit);
          }
@@ -260,13 +253,9 @@ public class App {
 
 
       // Load cherry-picked commits
-      HashMap<String, Map.Entry<ReleaseVersion, RevCommit>> cherryPickedCommits = new HashMap<>();
+      HashMap<String, Map.Entry<ReleaseVersion, GitCommit>> cherryPickedCommits = new HashMap<>();
       ReleaseVersion cherryPickedReleaseVersion = candidateReleaseVersion;
-      for (RevCommit commit : git.log()
-         .not(git.getRepository().resolve("upstream/" + upstreamBranch))
-         .add(git.getRepository().resolve("origin/" + midstreamBranch))
-         .call()) {
-
+      for (GitCommit commit : gitRepository.log("origin/" + midstreamBranch, "upstream/" + upstreamBranch)) {
          Matcher prepareReleaseCommitMatcher = prepareReleaseCommitPattern.matcher(commit.getShortMessage());
          if (prepareReleaseCommitMatcher.find()) {
             logger.info("prepare release commit found: " + commit.getName() + " - " + commit.getShortMessage());
@@ -280,13 +269,13 @@ public class App {
          if (cherryPickedCommitMatcher.find()) {
             String cherryPickedCommitName = cherryPickedCommitMatcher.group(1);
 
-            RevCommit cherryPickedCommit = upstreamCommits.stream().filter(
-               revCommit -> revCommit.getName().equals(cherryPickedCommitName)).findAny().orElse(null);
+            GitCommit cherryPickedCommit = upstreamCommits.stream().filter(
+               upstreamCommit -> upstreamCommit.getName().equals(cherryPickedCommitName)).findAny().orElse(null);
             if (cherryPickedCommit == null) {
                logger.error("cherry-picked commit not found: " + cherryPickedCommitName + " - " + commit.getShortMessage());
 
                cherryPickedCommit = upstreamCommits.stream().filter(
-                  revCommit -> revCommit.getShortMessage().equals(commit.getShortMessage())).findAny().orElse(null);
+                  upstreamCommit -> upstreamCommit.getShortMessage().equals(commit.getShortMessage())).findAny().orElse(null);
 
                if (cherryPickedCommit != null) {
                   logger.warn("similar cherry-picked commit found: " + cherryPickedCommit.getName() + " - " + cherryPickedCommit.getShortMessage());
@@ -341,7 +330,7 @@ public class App {
 
 
       // Init commit parser
-      CommitProcessor commitProcessor = new CommitProcessor(git, candidateReleaseVersion, requireReleaseIssues,
+      CommitProcessor commitProcessor = new CommitProcessor(gitRepository, candidateReleaseVersion, requireReleaseIssues,
          upstreamIssueClient, downstreamIssueClient, assigneeResolver, upstreamIssues, downstreamIssues,
          cherryPickedCommits, confirmedCommits, confirmedUpstreamIssues, confirmedDownstreamIssues,
          downstreamIssuesCustomerPriority, downstreamIssuesSecurityImpact, checkIncompleteCommits, scratch);
@@ -350,7 +339,7 @@ public class App {
       // Process upstream commits
       List<Commit> commits = new ArrayList<>();
       try {
-         for (RevCommit upstreamCommit : upstreamCommits) {
+         for (GitCommit upstreamCommit : upstreamCommits) {
             logger.info("Upstream commit: " + upstreamCommit.getName() + " - " + upstreamCommit.getShortMessage());
 
             commits.add(commitProcessor.process(upstreamCommit));
