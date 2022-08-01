@@ -467,17 +467,18 @@ public class IssueClient {
             issue.setTargetRelease(targetReleaseElement.getAsJsonObject().get("name").getAsString());
          }
 
+         JsonElement linksElement = issueFields.get("issuelinks");
+         issue.setPatch(linksElement != null && !linksElement.isJsonNull() && linksElement.toString().matches(".*PATCH-[0-9]+.*"));
+
          //"id":"customfield_12312340","name":"GSS Priority"
          //"id":"customfield_12310120","name":"Help Desk Ticket Reference"
          //"id":"customfield_12310021","name":"Support Case Reference"
          JsonElement gssPriorityElement = issueFields.get("customfield_12312340");
          JsonElement helpDeskTicketReferenceElement = issueFields.get("customfield_12310120");
          JsonElement supportCaseReferenceElement = issueFields.get("customfield_12310021");
-         JsonElement linksElement = issueFields.get("issuelinks");
-         issue.setCustomer((gssPriorityElement != null && !gssPriorityElement.isJsonNull()) ||
+         issue.setCustomer(issue.isPatch() || (gssPriorityElement != null && !gssPriorityElement.isJsonNull()) ||
             (helpDeskTicketReferenceElement != null && !helpDeskTicketReferenceElement.isJsonNull()) ||
-            (supportCaseReferenceElement != null && !supportCaseReferenceElement.isJsonNull()) ||
-            (linksElement != null && !linksElement.isJsonNull() && linksElement.toString().matches("PATCH-[0-9]+]")));
+            (supportCaseReferenceElement != null && !supportCaseReferenceElement.isJsonNull()));
          issue.setCustomerPriority(gssPriorityElement != null && !gssPriorityElement.isJsonNull() ? CustomerPriority.fromName(
             gssPriorityElement.getAsJsonObject().get("value").getAsString()) : CustomerPriority.NONE);
 

@@ -288,9 +288,10 @@ public class CommitProcessor {
    private boolean requireCherryPick(List<Issue> downstreamIssues) {
       for (Issue downstreamIssue : downstreamIssues) {
          if ((confirmedDownstreamIssues != null && confirmedDownstreamIssues.containsKey(downstreamIssue.getKey())) ||
-            (confirmedDownstreamIssues == null && downstreamIssue.getType() == IssueType.BUG &&
+            (confirmedDownstreamIssues == null && ((downstreamIssue.getType() == IssueType.BUG &&
                ((downstreamIssue.isCustomer() && downstreamIssuesCustomerPriority.compareTo(downstreamIssue.getCustomerPriority()) <= 0) ||
-                  (downstreamIssue.isSecurity() && downstreamIssuesSecurityImpact.compareTo(downstreamIssue.getSecurityImpact()) <= 0)))) {
+                  (downstreamIssue.isSecurity() && downstreamIssuesSecurityImpact.compareTo(downstreamIssue.getSecurityImpact()) <= 0) ||
+                  (downstreamIssue.isPatch())))))) {
             return true;
          }
       }
@@ -518,7 +519,8 @@ public class CommitProcessor {
       for (String selectingRelease : releases) {
          if (release.equals(selectingRelease)) {
             return selectingRelease;
-         } else if (selectedRelease == null || ReleaseVersion.compare(selectingRelease, selectedRelease) > 0) {
+         } else if (selectedRelease == null || FUTURE_GA_RELEASE.equals(selectedRelease) ||
+            (!FUTURE_GA_RELEASE.equals(selectingRelease) && ReleaseVersion.compare(selectingRelease, selectedRelease) > 0)) {
             selectedRelease = selectingRelease;
          }
       }
@@ -541,21 +543,19 @@ public class CommitProcessor {
                downstreamIssueTargetRelease.isEmpty() ||
                downstreamIssueTargetRelease.equals(FUTURE_GA_RELEASE)) {
                if (requireReleaseIssues) {
-                  downstreamIssueTargetRelease = null;
+                  downstreamIssueTargetRelease = FUTURE_GA_RELEASE;
                } else {
                   downstreamIssueTargetRelease = release;
                   logger.warn("Downstream issue without target release: " + downstreamIssueKey);
                }
             }
 
-            if (downstreamIssueTargetRelease != null) {
-               List<Issue> downstreamIssuesGroup = downstreamIssuesGroups.get(downstreamIssueTargetRelease);
-               if (downstreamIssuesGroup == null) {
-                  downstreamIssuesGroup = new ArrayList<>();
-                  downstreamIssuesGroups.put(downstreamIssueTargetRelease, downstreamIssuesGroup);
-               }
-               downstreamIssuesGroup.add(downstreamIssue);
+            List<Issue> downstreamIssuesGroup = downstreamIssuesGroups.get(downstreamIssueTargetRelease);
+            if (downstreamIssuesGroup == null) {
+               downstreamIssuesGroup = new ArrayList<>();
+               downstreamIssuesGroups.put(downstreamIssueTargetRelease, downstreamIssuesGroup);
             }
+            downstreamIssuesGroup.add(downstreamIssue);
          } else {
             logger.warn("Downstream issue not found: " + downstreamIssueKey);
          }

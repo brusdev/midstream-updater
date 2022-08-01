@@ -34,6 +34,7 @@ public class Issue {
 
    private boolean customer;
    private CustomerPriority customerPriority;
+   private boolean patch;
    private boolean security;
    private SecurityImpact securityImpact;
    private String targetRelease;
@@ -80,6 +81,15 @@ public class Issue {
 
    public Issue setCustomer(boolean customer) {
       this.customer = customer;
+      return this;
+   }
+
+   public boolean isPatch() {
+      return patch;
+   }
+
+   public Issue setPatch(boolean patch) {
+      this.patch = patch;
       return this;
    }
 
