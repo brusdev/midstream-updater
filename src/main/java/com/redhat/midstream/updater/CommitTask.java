@@ -22,17 +22,8 @@ public class CommitTask {
    private CommitTaskState state;
    private String key;
    private String value;
-   private String assignee;
    private String result;
 
-   public String getAssignee() {
-      return assignee;
-   }
-
-   public CommitTask setAssignee(String assignee) {
-      this.assignee = assignee;
-      return this;
-   }
 
    public CommitTaskType getType() {
       return type;

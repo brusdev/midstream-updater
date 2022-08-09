@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class Commit {
+   private String assignee;
    private CommitState state;
    private String upstreamIssue;
    private List<String> downstreamIssues;
@@ -39,6 +40,14 @@ public class Commit {
       tasks = new ArrayList<>();
    }
 
+   public String getAssignee() {
+      return assignee;
+   }
+
+   public Commit setAssignee(String assignee) {
+      this.assignee = assignee;
+      return this;
+   }
    public List<String> getTests() {
       return tests;
    }
