@@ -191,7 +191,7 @@ public class App {
       // Load upstream issues
       File upstreamIssuesFile = new File(targetDir, "upstream-issues.json");
       IssueManager upstreamIssueManager = new JiraIssueManager(
-         "ARTEMIS", "https://issues.apache.org/jira/rest/api/2", upstreamIssuesAuthString);
+         "https://issues.apache.org/jira/rest/api/2", upstreamIssuesAuthString, "ARTEMIS");
       if (upstreamIssuesFile.exists()) {
          upstreamIssueManager.loadIssues(upstreamIssuesFile);
       } else {
@@ -201,7 +201,8 @@ public class App {
 
       // Load downstream issues
       File downstreamIssuesFile = new File(targetDir, "downstream-issues.json");
-      IssueManager downstreamIssueManager = new JiraIssueManager("ENTMQBR", "https://issues.redhat.com/rest/api/2", downstreamIssuesAuthString);
+      IssueManager downstreamIssueManager = new JiraIssueManager(
+         "https://issues.redhat.com/rest/api/2", downstreamIssuesAuthString, "ENTMQBR");
       if (downstreamIssuesFile.exists()) {
          downstreamIssueManager.loadIssues(downstreamIssuesFile);
       } else {
