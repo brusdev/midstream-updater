@@ -146,7 +146,7 @@ public class CommitProcessor {
 
          if (upstreamIssueMatcher.find() && cherryPickedCommit == null) {
             logger.warn("SKIPPED because the commit message includes multiple upstream issue keys");
-            commit.setState(CommitState.SKIPPED).setReason("MULTIPLE_UPSTREAM_ISSUES");
+            commit.setState(CommitState.FAILED).setReason("MULTIPLE_UPSTREAM_ISSUES");
             return commit;
          }
 
@@ -154,7 +154,7 @@ public class CommitProcessor {
 
          if (upstreamIssue == null && cherryPickedCommit == null) {
             logger.warn("SKIPPED because the upstream issue is not found: " + upstreamIssueKey);
-            commit.setState(CommitState.SKIPPED).setReason("UPSTREAM_ISSUE_NOT_FOUND");
+            commit.setState(CommitState.FAILED).setReason("UPSTREAM_ISSUE_NOT_FOUND");
             return commit;
          }
       }
