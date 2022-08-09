@@ -57,6 +57,7 @@ public class App {
    private static final String ASSIGNEE_OPTION = "assignee";
    private static final String CHECK_INCOMPLETE_COMMITS_OPTION = "check-incomplete-commits";
    private static final String SCRATCH_OPTION = "scratch";
+   private static final String SKIP_COMMIT_TEST_OPTION = "skip-commit-test";
 
 
    public static void main(String[] args) throws Exception {
@@ -79,6 +80,7 @@ public class App {
 
       options.addOption(createOption(null, CHECK_INCOMPLETE_COMMITS_OPTION, false, true, true, "check tasks of cherry-picked commits"));
       options.addOption(createOption(null, SCRATCH_OPTION, false, false, false, "scratch"));
+      options.addOption(createOption(null, SKIP_COMMIT_TEST_OPTION, false, false, false, "skip commit test"));
 
       CommandLine line = null;
       CommandLineParser parser = new DefaultParser();
@@ -137,6 +139,8 @@ public class App {
       }
 
       boolean scratch = line.hasOption(SCRATCH_OPTION);
+
+      boolean skipCommitTest = line.hasOption(SKIP_COMMIT_TEST_OPTION);
 
       // Initialize target directory
       File targetDir = new File("target");
@@ -325,7 +329,7 @@ public class App {
       // Init commit parser
       CommitProcessor commitProcessor = new CommitProcessor(gitRepository, candidateReleaseVersion, requireReleaseIssues, upstreamIssueManager, downstreamIssueManager, assigneeResolver,
                                                             cherryPickedCommits, confirmedCommits, confirmedUpstreamIssues, confirmedDownstreamIssues,
-                                                            downstreamIssuesCustomerPriority, downstreamIssuesSecurityImpact, checkIncompleteCommits, scratch);
+                                                            downstreamIssuesCustomerPriority, downstreamIssuesSecurityImpact, checkIncompleteCommits, scratch, skipCommitTest);
 
 
       // Process upstream commits

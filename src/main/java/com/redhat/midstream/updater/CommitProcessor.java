@@ -76,6 +76,8 @@ public class CommitProcessor {
    private SecurityImpact downstreamIssuesSecurityImpact;
    private boolean checkIncompleteCommits;
    private boolean scratch;
+   private boolean skipCommitTest;
+
 
 
    public CommitProcessor(GitRepository gitRepository, ReleaseVersion candidateReleaseVersion, boolean requireReleaseIssues,
@@ -85,7 +87,7 @@ public class CommitProcessor {
                           Map<String, Issue> confirmedDownstreamIssues,
                           CustomerPriority downstreamIssuesCustomerPriority,
                           SecurityImpact downstreamIssuesSecurityImpact,
-                          boolean checkIncompleteCommits, boolean scratch) {
+                          boolean checkIncompleteCommits, boolean scratch, boolean skipCommitTest) {
       this.gitRepository = gitRepository;
       this.candidateReleaseVersion = candidateReleaseVersion;
       this.requireReleaseIssues = requireReleaseIssues;
@@ -100,6 +102,7 @@ public class CommitProcessor {
       this.downstreamIssuesSecurityImpact = downstreamIssuesSecurityImpact;
       this.checkIncompleteCommits = checkIncompleteCommits;
       this.scratch = scratch;
+      this.skipCommitTest = skipCommitTest;
    }
 
    public Commit process(GitCommit upstreamCommit) throws Exception {
@@ -394,7 +397,7 @@ public class CommitProcessor {
       if (type == CommitTaskType.CHERRY_PICK_UPSTREAM_COMMIT) {
          GitCommit upstreamCommit = gitRepository.resolveCommit(key);
          if (gitRepository.cherryPick(upstreamCommit)) {
-            if (!testCommit(commit)) {
+            if (!skipCommitTest && !testCommit(commit)) {
                logger.warn("Error testing: " + commit.getUpstreamCommit());
 
                gitRepository.resetHard();
