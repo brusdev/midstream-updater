@@ -5,6 +5,9 @@ import com.google.gson.GsonBuilder;
 import com.redhat.midstream.updater.git.GitCommit;
 import com.redhat.midstream.updater.git.GitRepository;
 import com.redhat.midstream.updater.git.JGitRepository;
+import com.redhat.midstream.updater.issues.Issue;
+import com.redhat.midstream.updater.issues.IssueManager;
+import com.redhat.midstream.updater.issues.JiraIssueManager;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
@@ -186,33 +189,27 @@ public class App {
 
 
       // Load upstream issues
-      Issue[] upstreamIssuesArray;
       File upstreamIssuesFile = new File(targetDir, "upstream-issues.json");
-      IssueClient upstreamIssueClient = new IssueClient("https://issues.apache.org/jira/rest/api/2", upstreamIssuesAuthString);
+      IssueManager upstreamIssueManager = new JiraIssueManager(
+         "ARTEMIS", "https://issues.apache.org/jira/rest/api/2", upstreamIssuesAuthString);
       if (upstreamIssuesFile.exists()) {
-         upstreamIssuesArray = gson.fromJson(FileUtils.readFileToString(upstreamIssuesFile, Charset.defaultCharset()), Issue[].class);
+         upstreamIssueManager.loadIssues(upstreamIssuesFile);
       } else {
-         upstreamIssuesArray = upstreamIssueClient.loadProjectIssues("ARTEMIS", false);
-      }
-
-      Map<String, Issue> upstreamIssues = new HashMap();
-      for (Issue issue : upstreamIssuesArray) {
-         upstreamIssues.put(issue.getKey(), issue);
+         upstreamIssueManager.loadIssues(false);
       }
 
 
       // Load downstream issues
-      Issue[] downstreamIssuesArray;
       File downstreamIssuesFile = new File(targetDir, "downstream-issues.json");
-      IssueClient downstreamIssueClient = new IssueClient("https://issues.redhat.com/rest/api/2", downstreamIssuesAuthString);
+      IssueManager downstreamIssueManager = new JiraIssueManager("ENTMQBR", "https://issues.redhat.com/rest/api/2", downstreamIssuesAuthString);
       if (downstreamIssuesFile.exists()) {
-         downstreamIssuesArray = gson.fromJson(FileUtils.readFileToString(downstreamIssuesFile, Charset.defaultCharset()), Issue[].class);
+         downstreamIssueManager.loadIssues(downstreamIssuesFile);
       } else {
-         downstreamIssuesArray = downstreamIssueClient.loadProjectIssues("ENTMQBR", true);
+         downstreamIssueManager.loadIssues(true);
 
-         for (Issue issue : downstreamIssuesArray) {
+         for (Issue issue : downstreamIssueManager.getIssues()) {
             for (String upstreamIssueKey : issue.getIssues()) {
-               Issue upstreamIssue = upstreamIssues.get(upstreamIssueKey);
+               Issue upstreamIssue = upstreamIssueManager.getIssue(upstreamIssueKey);
 
                if (upstreamIssue != null) {
                   logger.debug("upstream issue " + upstreamIssueKey + " linked to downstream issue " + issue.getKey());
@@ -226,21 +223,16 @@ public class App {
          }
       }
 
-      Map<String, Issue> downstreamIssues = new HashMap();
-      for (Issue issue : downstreamIssuesArray) {
-         downstreamIssues.put(issue.getKey(), issue);
-      }
-
 
       // Store upstream issues
       if (!upstreamIssuesFile.exists()) {
-         FileUtils.writeStringToFile(upstreamIssuesFile, gson.toJson(upstreamIssuesArray), Charset.defaultCharset());
+         upstreamIssueManager.storeIssues(upstreamIssuesFile);
       }
 
 
       // Store downstream issues
       if (!downstreamIssuesFile.exists()) {
-         FileUtils.writeStringToFile(downstreamIssuesFile, gson.toJson(downstreamIssuesArray), Charset.defaultCharset());
+         downstreamIssueManager.storeIssues(downstreamIssuesFile);
       }
 
       // Load upstream commits
@@ -306,7 +298,7 @@ public class App {
       if (confirmedUpstreamIssueKeys != null) {
          confirmedUpstreamIssues = new HashMap<>();
          for (String confirmedUpstreamIssueKey : confirmedUpstreamIssueKeys.split(",")) {
-            Issue confirmedUpstreamIssue = upstreamIssues.get(confirmedUpstreamIssueKey);
+            Issue confirmedUpstreamIssue = upstreamIssueManager.getIssue(confirmedUpstreamIssueKey);
             if (confirmedUpstreamIssue == null) {
                logger.warn("Upstream issue not found: " + confirmedUpstreamIssueKey);
             }
@@ -320,7 +312,7 @@ public class App {
       if (confirmedDownstreamIssueKeys != null) {
          confirmedDownstreamIssues = new HashMap<>();
          for (String confirmedDownstreamIssueKey : confirmedDownstreamIssueKeys.split(",")) {
-            Issue confirmedDownstreamIssue = upstreamIssues.get(confirmedDownstreamIssueKey);
+            Issue confirmedDownstreamIssue = downstreamIssueManager.getIssue(confirmedDownstreamIssueKey);
             if (confirmedDownstreamIssue == null) {
                logger.warn("Downstream issue not found: " + confirmedDownstreamIssueKey);
             }
@@ -330,10 +322,9 @@ public class App {
 
 
       // Init commit parser
-      CommitProcessor commitProcessor = new CommitProcessor(gitRepository, candidateReleaseVersion, requireReleaseIssues,
-         upstreamIssueClient, downstreamIssueClient, assigneeResolver, upstreamIssues, downstreamIssues,
-         cherryPickedCommits, confirmedCommits, confirmedUpstreamIssues, confirmedDownstreamIssues,
-         downstreamIssuesCustomerPriority, downstreamIssuesSecurityImpact, checkIncompleteCommits, scratch);
+      CommitProcessor commitProcessor = new CommitProcessor(gitRepository, candidateReleaseVersion, requireReleaseIssues, upstreamIssueManager, downstreamIssueManager, assigneeResolver,
+                                                            cherryPickedCommits, confirmedCommits, confirmedUpstreamIssues, confirmedDownstreamIssues,
+                                                            downstreamIssuesCustomerPriority, downstreamIssuesSecurityImpact, checkIncompleteCommits, scratch);
 
 
       // Process upstream commits
@@ -358,11 +349,11 @@ public class App {
          //FileUtils.writeStringToFile(commitsFile, gson.toJson(commits), Charset.defaultCharset());
 
          // Store upstream issues
-         FileUtils.writeStringToFile(upstreamIssuesFile, gson.toJson(upstreamIssues.values()), Charset.defaultCharset());
+         upstreamIssueManager.storeIssues(upstreamIssuesFile);
 
 
          // Store downstream issues
-         FileUtils.writeStringToFile(downstreamIssuesFile, gson.toJson(downstreamIssues.values()), Charset.defaultCharset());
+         downstreamIssueManager.storeIssues(downstreamIssuesFile);
       }
 
       File payloadFile = new File(targetDir, "payload.csv");

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package com.redhat.midstream.updater;
+package com.redhat.midstream.updater.issues;
 
 public enum IssueType {
    BUG,

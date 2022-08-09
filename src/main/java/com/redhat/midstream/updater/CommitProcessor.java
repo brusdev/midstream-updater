@@ -19,6 +19,10 @@ package com.redhat.midstream.updater;
 
 import com.redhat.midstream.updater.git.GitCommit;
 import com.redhat.midstream.updater.git.GitRepository;
+import com.redhat.midstream.updater.issues.Issue;
+import com.redhat.midstream.updater.issues.IssueManager;
+import com.redhat.midstream.updater.issues.IssueState;
+import com.redhat.midstream.updater.issues.IssueType;
 import org.apache.maven.plugin.surefire.log.api.NullConsoleLogger;
 import org.apache.maven.plugins.surefire.report.ReportTestSuite;
 import org.apache.maven.plugins.surefire.report.SurefireReportParser;
@@ -61,11 +65,9 @@ public class CommitProcessor {
    private GitRepository gitRepository;
    private ReleaseVersion candidateReleaseVersion;
    private boolean requireReleaseIssues;
-   private IssueClient upstreamIssueClient;
-   private IssueClient downstreamIssueClient;
+   private IssueManager upstreamIssueManager;
+   private IssueManager downstreamIssueManager;
    private AssigneeResolver assigneeResolver;
-   private Map<String, Issue> upstreamIssues;
-   private Map<String, Issue> downstreamIssues;
    private HashMap<String, Map.Entry<ReleaseVersion, GitCommit>> cherryPickedCommits;
    private Map<String, Commit> confirmedCommits;
    private Map<String, Issue> confirmedUpstreamIssues;
@@ -77,9 +79,8 @@ public class CommitProcessor {
 
 
    public CommitProcessor(GitRepository gitRepository, ReleaseVersion candidateReleaseVersion, boolean requireReleaseIssues,
-                          IssueClient upstreamIssueClient, IssueClient downstreamIssueClient,
-                          AssigneeResolver assigneeResolver, Map<String, Issue> upstreamIssues,
-                          Map<String, Issue> downstreamIssues, HashMap<String, Map.Entry<ReleaseVersion, GitCommit>> cherryPickedCommits,
+                          IssueManager upstreamIssueManager, IssueManager downstreamIssueManager, AssigneeResolver assigneeResolver,
+                          HashMap<String, Map.Entry<ReleaseVersion, GitCommit>> cherryPickedCommits,
                           Map<String, Commit> confirmedCommits, Map<String, Issue> confirmedUpstreamIssues,
                           Map<String, Issue> confirmedDownstreamIssues,
                           CustomerPriority downstreamIssuesCustomerPriority,
@@ -88,11 +89,9 @@ public class CommitProcessor {
       this.gitRepository = gitRepository;
       this.candidateReleaseVersion = candidateReleaseVersion;
       this.requireReleaseIssues = requireReleaseIssues;
-      this.upstreamIssueClient = upstreamIssueClient;
-      this.downstreamIssueClient = downstreamIssueClient;
+      this.upstreamIssueManager = upstreamIssueManager;
+      this.downstreamIssueManager = downstreamIssueManager;
       this.assigneeResolver = assigneeResolver;
-      this.upstreamIssues = upstreamIssues;
-      this.downstreamIssues = downstreamIssues;
       this.cherryPickedCommits = cherryPickedCommits;
       this.confirmedCommits = confirmedCommits;
       this.confirmedUpstreamIssues = confirmedUpstreamIssues;
@@ -148,7 +147,7 @@ public class CommitProcessor {
             return commit;
          }
 
-         upstreamIssue = upstreamIssueKey != null ? upstreamIssues.get(upstreamIssueKey) : null;
+         upstreamIssue = upstreamIssueKey != null ? upstreamIssueManager.getIssue(upstreamIssueKey) : null;
 
          if (upstreamIssue == null && cherryPickedCommit == null) {
             logger.warn("SKIPPED because the upstream issue is not found: " + upstreamIssueKey);
@@ -414,8 +413,8 @@ public class CommitProcessor {
                                        upstreamCommit.getAuthorEmail(),
                                        upstreamCommit.getAuthorWhen(),
                                        upstreamCommit.getAuthorTimeZone(),
-                                       upstreamCommit.getCommitterName(),
-                                       upstreamCommit.getCommitterEmail());
+                                       COMMITTER_NAME,
+                                       COMMITTER_EMAIL);
 
                   gitRepository.push("origin", null);
 
@@ -438,41 +437,57 @@ public class CommitProcessor {
             commitTask.setState(CommitTaskState.SCRATCHED);
          } else {
             if (type == CommitTaskType.ADD_DOWNSTREAM_ISSUE_LABEL) {
-               downstreamIssueClient.addIssueLabels(key, value);
-               downstreamIssues.get(key).getLabels().add(value);
+               downstreamIssueManager.addIssueLabels(key, value);
+               downstreamIssueManager.getIssue(key).getLabels().add(value);
             } else if (type == CommitTaskType.SET_DOWNSTREAM_ISSUE_TARGET_RELEASE) {
-               downstreamIssueClient.setIssueTargetRelease(key, value);
-               downstreamIssues.get(key).setTargetRelease(value);
+               downstreamIssueManager.setIssueTargetRelease(key, value);
+               downstreamIssueManager.getIssue(key).setTargetRelease(value);
             } else if (type == CommitTaskType.TRANSITION_DOWNSTREAM_ISSUE) {
                IssueState downstreamIssueState = IssueState.valueOf(value);
-               downstreamIssueClient.transitionIssue(key, downstreamIssueState);
-               downstreamIssues.get(key).setState(downstreamIssueState);
+               downstreamIssueManager.transitionIssue(key, downstreamIssueState);
+               downstreamIssueManager.getIssue(key).setState(downstreamIssueState);
             } else if (type == CommitTaskType.CLONE_DOWNSTREAM_ISSUE) {
+               Issue cloningIssue = downstreamIssueManager.getIssue(key);
                ReleaseVersion releaseVersion = new ReleaseVersion(release);
                String summaryPrefix = "[" + releaseVersion.getMajor() + "." + releaseVersion.getMinor() + "]";
-               Issue downstreamIssue = downstreamIssueClient.cloneIssue("ENTMQBR", key, summaryPrefix,
-                                                                        label -> !label.startsWith("CR"), release);
 
-               for (String upstreamIssueKey : downstreamIssue.getIssues()) {
-                  Issue upstreamIssue = upstreamIssues.get(upstreamIssueKey);
-                  upstreamIssue.getIssues().add(downstreamIssue.getKey());
+               if (cloningIssue.getIssues().size() != 1) {
+                  throw new IllegalStateException("Invalid number of upstream issues to clone");
                }
 
-               downstreamIssues.put(downstreamIssue.getKey(), downstreamIssue);
-               commitTask.setResult(downstreamIssue.getKey());
+               List<String> labels = new ArrayList<>();
+               for (String label : cloningIssue.getLabels()) {
+                  if (!label.startsWith("CR")) {
+                     labels.add(label);
+                  }
+               }
+
+               Issue clonedIssue = downstreamIssueManager.createIssue(
+                  summaryPrefix + " " + cloningIssue.getSummary(),
+                  cloningIssue.getDescription(), cloningIssue.getType(), cloningIssue.getAssignee(),
+                  cloningIssue.getIssues().get(0), release, labels);
+
+               downstreamIssueManager.linkIssue(clonedIssue.getKey(), key, "Cloners");
+
+               for (String upstreamIssueKey : clonedIssue.getIssues()) {
+                  Issue upstreamIssue = upstreamIssueManager.getIssue(upstreamIssueKey);
+                  upstreamIssue.getIssues().add(clonedIssue.getKey());
+               }
+
+               commitTask.setResult(clonedIssue.getKey());
             } else if (type == CommitTaskType.CLONE_UPSTREAM_ISSUE) {
-               Issue upstreamIssue = upstreamIssues.get(key);
+               Issue upstreamIssue = upstreamIssueManager.getIssue(key);
                List<String> labels = new ArrayList<>();
                labels.add(qualifier);
                if (commit.getTests().size() > 0) {
                   labels.add(UPSTREAM_TEST_COVERAGE_LABEL);
                }
 
-               Issue downstreamIssue = downstreamIssueClient.createIssue("ENTMQBR", upstreamIssue.getSummary(),
-                                                                         upstreamIssue.getDescription(), upstreamIssue.getType(), assignee.getDownstreamUsername(),
-                                                                         "https://issues.apache.org/jira/browse/" + upstreamIssue.getKey(), release, labels);
+               Issue downstreamIssue = downstreamIssueManager.createIssue(
+                  upstreamIssue.getSummary(),
+                  upstreamIssue.getDescription(), upstreamIssue.getType(), assignee.getDownstreamUsername(),
+                  "https://issues.apache.org/jira/browse/" + upstreamIssue.getKey(), release, labels);
 
-               downstreamIssues.put(downstreamIssue.getKey(), downstreamIssue);
                upstreamIssue.getIssues().add(downstreamIssue.getKey());
                commitTask.setResult(downstreamIssue.getKey());
             } else {
@@ -536,7 +551,7 @@ public class CommitProcessor {
 
       Map<String, List<Issue>> downstreamIssuesGroups = new HashMap<>();
       for (String downstreamIssueKey : upstreamIssue.getIssues()) {
-         Issue downstreamIssue = downstreamIssues.get(downstreamIssueKey);
+         Issue downstreamIssue = downstreamIssueManager.getIssue(downstreamIssueKey);
          if (downstreamIssue != null) {
             String downstreamIssueTargetRelease = downstreamIssue.getTargetRelease();
             if (downstreamIssueTargetRelease == null ||

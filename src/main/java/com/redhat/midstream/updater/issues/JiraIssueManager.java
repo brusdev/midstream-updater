@@ -15,32 +15,41 @@
  * limitations under the License.
  */
 
-package com.redhat.midstream.updater;
+package com.redhat.midstream.updater.issues;
 
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
-import java.util.function.Predicate;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class IssueClient {
-   private final static Logger logger = LoggerFactory.getLogger(IssueClient.class);
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.redhat.midstream.updater.CustomerPriority;
+import com.redhat.midstream.updater.SecurityImpact;
+import org.apache.commons.io.FileUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class JiraIssueManager implements IssueManager {
+   private final static Logger logger = LoggerFactory.getLogger(JiraIssueManager.class);
 
    //"id":"customfield_12311240","name":"Target Release"
    private final static String TARGET_RELEASE_FIELD = "customfield_12311240";
@@ -50,13 +59,32 @@ public class IssueClient {
 
    private String serverURL;
    private String authString;
+   private String projectKey;
 
-   public IssueClient(String serverURL, String authString) {
+   private Map<String, Issue> issues;
+
+   private Gson gson = new GsonBuilder().setPrettyPrinting().create();
+
+
+   public JiraIssueManager(String serverURL, String authString, String projectKey) {
       this.serverURL = serverURL;
       this.authString = authString;
+      this.projectKey = projectKey;
+      this.issues = new HashMap<>();
    }
 
-   public Issue createIssue(String projectKey, String summary, String description, IssueType type, String assignee, String upstreamIssue, String targetRelease, List<String> labels) throws Exception {
+   @Override
+   public Issue getIssue(String key) {
+      return issues.get(key);
+   }
+
+   @Override
+   public Collection<Issue> getIssues() {
+      return issues.values();
+   }
+
+   @Override
+   public Issue createIssue(String summary, String description, IssueType type, String assignee, String upstreamIssue, String targetRelease, List<String> labels) throws Exception {
 
       JsonObject issueObject = new JsonObject();
       {
@@ -89,32 +117,11 @@ public class IssueClient {
 
       String issueKey = postIssue(issueObject);
 
-      return parseIssue(getIssue(issueKey), true);
-   }
+      Issue issue = parseIssue(loadIssue(issueKey), true);
 
-   public Issue cloneIssue(String projectKey, String cloningIssueKey, String summaryPrefix, Predicate<String> labelFilter, String targetRelease) throws Exception {
-      JsonObject issueObject = getIssue(cloningIssueKey);
+      issues.put(issue.getKey(), issue);
 
-      Issue cloningIssue = parseIssue(issueObject, true);
-
-      if (cloningIssue.getIssues().size() != 1) {
-         throw new IllegalStateException("Invalid number of upstream issues to clone");
-      }
-
-      List<String> labels = new ArrayList<>();
-      for (String label : cloningIssue.getLabels()) {
-         if (labelFilter == null || labelFilter.test(label)) {
-            labels.add(label);
-         }
-      }
-
-      Issue clonedIssue = createIssue(projectKey, summaryPrefix + " " + cloningIssue.getSummary(),
-                                      cloningIssue.getDescription(), cloningIssue.getType(), cloningIssue.getAssignee(),
-                                      cloningIssue.getIssues().get(0), targetRelease, labels);
-
-      linkIssue(clonedIssue.getKey(), cloningIssueKey, "Cloners");
-
-      return clonedIssue;
+      return issue;
    }
 
    private String postIssue(JsonObject issueObject) throws Exception {
@@ -144,6 +151,7 @@ public class IssueClient {
       }
    }
 
+   @Override
    public void addIssueLabels(String issueKey, String... labels) throws Exception {
 
       List<String> newLabels = new ArrayList<>();
@@ -151,7 +159,7 @@ public class IssueClient {
          newLabels.add(label);
       }
 
-      JsonObject issueObject = getIssue(issueKey);
+      JsonObject issueObject = loadIssue(issueKey);
       JsonObject issueFields = issueObject.getAsJsonObject("fields");
       JsonArray labelsArray = issueFields.getAsJsonArray("labels");
 
@@ -179,6 +187,7 @@ public class IssueClient {
       }
    }
 
+   @Override
    public void linkIssue(String issueKey, String cloningIssueKey, String linkType) throws Exception {
 
       JsonObject issueLinkObject = new JsonObject();
@@ -225,6 +234,7 @@ public class IssueClient {
       }
    }
 
+   @Override
    public void setIssueTargetRelease(String issueKey, String targetRelease) throws Exception {
 
       JsonObject updatingIssueObject = new JsonObject();
@@ -257,6 +267,7 @@ public class IssueClient {
       }
    }
 
+   @Override
    public void transitionIssue(String issueKey, IssueState finalStatus) throws Exception {
       IssueState status = getIssueStatus(issueKey);
 
@@ -302,7 +313,7 @@ public class IssueClient {
       connection.getInputStream().close();
    }
 
-   private JsonObject getIssue(String issueKey) throws Exception {
+   private JsonObject loadIssue(String issueKey) throws Exception {
       HttpURLConnection connection = createConnection("/issue/" + issueKey);
       try {
          try (InputStreamReader inputStreamReader = new InputStreamReader(connection.getInputStream())) {
@@ -314,7 +325,7 @@ public class IssueClient {
    }
 
    public IssueState getIssueStatus(String issueKey) throws Exception {
-      JsonObject issueObject = getIssue(issueKey);
+      JsonObject issueObject = loadIssue(issueKey);
 
       JsonObject issueFields = issueObject.getAsJsonObject("fields");
 
@@ -349,10 +360,10 @@ public class IssueClient {
       }
    }
 
-   public Issue[] loadProjectIssues(String projectKey, boolean parseCustomFields) throws Exception {
+   @Override
+   public void loadIssues(boolean parseCustomFields) throws Exception {
       int total = 0;
       final int MAX_RESULTS = 250;
-      List<Issue> issues = Collections.synchronizedList(new ArrayList<>());
 
       HttpURLConnection searchConnection = createConnection("/search?jql=project=%22" + projectKey + "%22&maxResults=0");
       try {
@@ -371,20 +382,27 @@ public class IssueClient {
       for (int i = 0; i < taskCount; i++) {
          final int start = i * MAX_RESULTS;
 
-         tasks.add(() -> loadProjectIssues(projectKey, parseCustomFields, start, MAX_RESULTS, issues));
+         tasks.add(() -> loadIssues(parseCustomFields, start, MAX_RESULTS));
       }
 
       long beginTimestamp = System.nanoTime();
-      Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors()).invokeAll(tasks);
+      List<Future<Integer>> taskFutures = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors()).invokeAll(tasks);
       long endTimestamp = System.nanoTime();
 
-      logger.info("Loaded " + issues.size() + " issues in " + (endTimestamp - beginTimestamp) / 1000000 + " milliseconds");
+      int count = 0;
+      for (Future<Integer> taskFuture : taskFutures) {
+         count += taskFuture.get();
+      }
 
-      return issues.toArray(Issue[]::new);
+      logger.info("Loaded " + count + "/" + total + " issues in " + (endTimestamp - beginTimestamp) / 1000000 + " milliseconds");
+
+      if (count != total) {
+         throw new IllegalStateException("Error loading " + count + "/" + total + " issues");
+      }
    }
 
 
-   public int loadProjectIssues(String projectKey, boolean parseCustomFields, int start, int maxResults, List<Issue> issues) throws Exception {
+   public int loadIssues(boolean parseCustomFields, int start, int maxResults) throws Exception {
       int result = 0;
 
       HttpURLConnection connection = createConnection("/search?jql=project=%22" + projectKey + "%22&fields=*all&maxResults=" + maxResults + "&startAt=" + start);
@@ -397,7 +415,9 @@ public class IssueClient {
             for (JsonElement issueElement : issuesArray) {
                JsonObject issueObject = issueElement.getAsJsonObject();
 
-               issues.add(parseIssue(issueObject, parseCustomFields));
+               Issue issue = parseIssue(issueObject, parseCustomFields);
+
+               issues.put(issue.getKey(), issue);
 
                result++;
             }
@@ -409,6 +429,19 @@ public class IssueClient {
       return result;
    }
 
+   @Override
+   public void loadIssues(File file) throws Exception {
+      Issue[] issuesArray = gson.fromJson(FileUtils.readFileToString(file, Charset.defaultCharset()), Issue[].class);
+
+      for (Issue issue : issuesArray) {
+         issues.put(issue.getKey(), issue);
+      }
+   }
+
+   @Override
+   public void storeIssues(File file) throws Exception {
+      FileUtils.writeStringToFile(file, gson.toJson(issues.values()), Charset.defaultCharset());
+   }
 
    private Issue parseIssue(JsonObject issueObject, boolean parseCustomFields) {
       String issueKey = issueObject.getAsJsonPrimitive("key").getAsString();

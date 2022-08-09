@@ -18,6 +18,7 @@
 package com.redhat.midstream.updater;
 
 import com.redhat.midstream.updater.git.GitCommit;
+import com.redhat.midstream.updater.issues.Issue;
 
 import java.util.List;
 

@@ -15,10 +15,13 @@
  * limitations under the License.
  */
 
-package com.redhat.midstream.updater;
+package com.redhat.midstream.updater.issues;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import com.redhat.midstream.updater.CustomerPriority;
+import com.redhat.midstream.updater.SecurityImpact;
 
 public class Issue {
    private String key;
